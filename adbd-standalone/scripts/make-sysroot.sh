@@ -29,14 +29,18 @@ SYSROOT="$HERE/sysroot-aarch64"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# package = repo/path  (paths may contain ':' epoch)
+# Packages to overlay, as "repo/name". Versions are NOT pinned: ALARM is a
+# rolling mirror and hard-coded filenames 404 as soon as a rebuild lands
+# (this broke CI once: brotli 1.2.0 -> 1.2.1, libc++ 23.1.1 -> 23.1.4).
+# Each name is resolved against the live repo listing, newest first, so the
+# sysroot always matches what a device running ALARM today actually has.
 packages=(
-    "core/libcap-2.78-1-aarch64.pkg.tar.xz"
-    "core/brotli-1.2.0-1-aarch64.pkg.tar.xz"
-    "core/zstd-1.5.7-3-aarch64.pkg.tar.xz"
-    "core/lz4-1:1.10.0-2-aarch64.pkg.tar.xz"
-    "extra/libc++-23.1.1-1-aarch64.pkg.tar.xz"
-    "extra/libc++abi-23.1.1-1-aarch64.pkg.tar.xz"
+    "core/libcap"
+    "core/brotli"
+    "core/zstd"
+    "core/lz4"
+    "extra/libc++"
+    "extra/libc++abi"
 )
 
 echo "==> base: copying /usr/aarch64-linux-gnu"
@@ -46,10 +50,28 @@ cp -a /usr/aarch64-linux-gnu "$SYSROOT"
 echo "==> fetching ALARM packages"
 mkdir -p "$WORK/root"
 for p in "${packages[@]}"; do
-    f="$WORK/$(basename "$p" | tr ':' '_')"
-    echo "    $p"
-    curl -fsSL --retry 3 -o "$f" "$MIRROR/aarch64/$p"
-    tar -xf "$f" -C "$WORK/root"
+    repo="${p%%/*}"
+    name="${p#*/}"
+    # Mirror listings URL-encode '+' as %2B (libc++ -> libc%2B%2B).
+    enc="${name//+/%2B}"
+    listing="$WORK/$repo.html"
+    if [ ! -f "$listing" ]; then
+        curl -fsSL --retry 3 -o "$listing" "$MIRROR/aarch64/$repo/"
+    fi
+    # Exact-name match only: the trailing '-' keeps libcap from matching
+    # libcap-ng, libc++ from matching libc++abi, etc. grep -oE already
+    # captures the whole href="filename" — just strip the wrapper and pick
+    # the newest version.
+    file="$(grep -oE "href=\"${enc}-[0-9][^\"]*-aarch64\.pkg\.tar\.(xz|zst)\"" "$listing" \
+            | sed 's/^href="//; s/"$//' \
+            | sort -u -V | tail -1)"
+    if [ -z "$file" ]; then
+        echo "ERROR: no aarch64 package matching $name in $MIRROR/aarch64/$repo/" >&2
+        exit 1
+    fi
+    echo "    $repo/$file"
+    curl -fsSL --retry 3 -o "$WORK/pkg.tar.xz" "$MIRROR/aarch64/$repo/$file"
+    tar -xf "$WORK/pkg.tar.xz" -C "$WORK/root"
 done
 
 echo "==> overlaying ALARM files (headers non-clobbering)"
@@ -63,7 +85,11 @@ cp -an "$WORK/root/usr/include/sys/." "$SYSROOT/include/sys/" 2>/dev/null || tru
 echo "==> linking ALARM libs into lib/ (primary linker path)"
 mkdir -p "$SYSROOT/lib"
 for so in libc++ libc++abi libcap libbrotlicommon libbrotlienc libbrotlidec libzstd liblz4; do
-    cp -a "$SYSROOT"/usr/lib/${so}.so* "$SYSROOT/lib/" 2>/dev/null || true
+    # -L dereferences: ALARM's libc++ package ships usr/lib/libc++.so.1 as a
+    # symlink into usr/share/libc++/ (multi-ABI layout), and the cross-gcc
+    # sysroot may contain dangling links of its own — copying them verbatim
+    # leaves libc++.so.1 unresolvable at runtime.
+    cp -aL "$SYSROOT"/usr/lib/${so}.so* "$SYSROOT/lib/" 2>/dev/null || true
 done
 # lib64 mirror (some linkers/drivers look there first)
 ln -sfn lib "$SYSROOT/lib64"
