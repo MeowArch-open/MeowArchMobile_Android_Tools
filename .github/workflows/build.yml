@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - 'adbd-standalone/**'
+      - 'better_fastboot/**'
       - '.github/workflows/build.yml'
   pull_request:
     paths:
       - 'adbd-standalone/**'
+      - 'better_fastboot/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
@@ -146,4 +148,75 @@ jobs:
         with:
           name: adbd-meowarch-aarch64-pkg
           path: adbd-standalone/adbd-meowarch-*.pkg.tar.zst
+          if-no-files-found: error
+
+  build-fastboot:
+    # Standalone build of AOSP's official host fastboot tool (the real
+    # usb_linux backend + Android-forked mke2fs/make_f2fs), native x86_64.
+    # Smoke-tests binary version, command parity, and the sparse-image
+    # generators that `fastboot -w` shells out to.
+    name: fastboot x86_64 (standalone)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    timeout-minutes: 45
+    steps:
+      - name: Install build deps
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git clang cmake ninja make pkgconf zlib openssl gcc-libs \
+            fakeroot curl python android-tools
+
+      - uses: actions/checkout@v4
+
+      - name: Fetch AOSP sources (pinned)
+        working-directory: better_fastboot
+        run: ./scripts/fetch-aosp.sh
+
+      - name: Configure & build (native)
+        working-directory: better_fastboot
+        run: |
+          cmake -B build-native -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build-native -j"$(nproc)"
+
+      - name: Smoke test
+        working-directory: better_fastboot
+        run: |
+          set -e
+          ./build-native/fastboot --version | tee /tmp/v.txt | grep -q 'fastboot version'
+          # official usb_linux backend links neither libusb nor libstdc++-only
+          # surprises; it must talk to /dev/bus/usb via usbdevicefs ioctls.
+          ldd ./build-native/fastboot | tee /tmp/ldd.txt
+          ! grep -q libusb /tmp/ldd.txt
+          # command parity against the distro's platform-tools fastboot
+          diff <(./build-native/fastboot --help 2>&1 | grep -oE '^[a-z][a-zA-Z-]+' | sort -u) \
+               <(fastboot --help 2>&1 | grep -oE '^[a-z][a-zA-Z-]+' | sort -u)
+          # mke2fs -E android_sparse (the Android e2fsprogs fork) emits a
+          # sparse ext4 image, as `fastboot -w` needs.
+          FB="$PWD/build-native"
+          AOSP="$PWD/../aosp-adbd"
+          cd /tmp
+          MKE2FS_CONFIG="$AOSP/system/extras/ext4_utils/mke2fs.conf" \
+            "$FB/mke2fs" -t ext4 -b 4096 \
+            -E android_sparse -O uninit_bg ud.img 512 >/dev/null 2>&1
+          python3 -c "import struct;m,=struct.unpack('<I',open('/tmp/ud.img','rb').read(4));assert m==0xed26ff3a,'not sparse'"
+          # make_f2fs -S (the Android f2fs fork) emits a sparse f2fs image.
+          "$FB/make_f2fs" -S 209715200 -g android f2.img >/dev/null 2>&1
+          python3 -c "import struct;m,=struct.unpack('<I',open('/tmp/f2.img','rb').read(4));assert m==0xed26ff3a,'not sparse'"
+
+      - name: Package (makepkg)
+        working-directory: better_fastboot
+        run: |
+          useradd -m builder || true
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder:builder . ../aosp-adbd
+          sudo -u builder bash -c 'makepkg -f'
+          tar --zstd -xOf fastboot-meowarch-*.pkg.tar.zst .PKGINFO | grep '^arch = x86_64$'
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastboot-meowarch-x86_64-pkg
+          path: better_fastboot/fastboot-meowarch-*.pkg.tar.zst
           if-no-files-found: error

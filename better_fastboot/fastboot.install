@@ -1,0 +1,11 @@
+# fastboot-meowarch install hook
+
+post_install() {
+    cat <<'EOF'
+fastboot-meowarch: use `fastboot-meowarch` (or alias fastboot=fastboot-meowarch).
+  USB works like platform-tools; if `fastboot-meowarch devices` is empty but
+  lsusb sees the phone, install udev rules (AUR: android-udev) or run as root.
+  mke2fs/make_f2fs/mke2fs.conf live in /usr/lib/fastboot-meowarch/ and are
+  found automatically by the fastboot binary (same-directory lookup).
+EOF
+}

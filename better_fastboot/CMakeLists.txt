@@ -1,0 +1,345 @@
+# MeowArchMobile better_fastboot — standalone build
+# ============================================================
+# Builds AOSP's host `fastboot` tool (system/core/fastboot) as a native
+# glibc x86_64 binary — the real, complete upstream fastboot chain, not a
+# re-implementation. Compiles the genuine AOSP sources in place; only the
+# glue (this file, shims, packaging) is ours.
+#
+# The AOSP tree is referenced in place (no source copying): pass
+#   -DAOSP_ROOT=/path/to/aosp-adbd
+# Defaults to ../aosp-adbd relative to this file (shared with adbd-standalone).
+#
+# Targets:
+#   fastboot       — the flashing tool (USB via usb_linux.cpp + TCP/UDP)
+#   mke2fs         — Android e2fsprogs fork (`-E android_sparse`), for `fastboot -w`
+#   make_f2fs      — Android f2fs-tools fork (sparse + android preset)
+#   make_f2fs_casefold — make_f2fs with CONF_CASEFOLD/CONF_PROJID
+#
+# Design notes (why things are the way they are):
+#   * USB backend is the official usb_linux.cpp (usbdevicefs ioctls on
+#     /dev/bus/usb/*), exactly what Google's platform-tools ships for Linux.
+#     No libusb. Real phones work out of the box (with udev rules / perms).
+#   * libbase/liblog/libcutils-sockets/libsparse/libziparchive/liblp/
+#     libext4_utils/libdiagnose_usb are compiled from AOSP sources.
+#   * zlib and OpenSSL(libcrypto) come from the system, like Arch's own
+#     android-tools; the AOSP sources are unmodified. boringssl is NOT built
+#     (liblp only needs SHA256, which system libcrypto provides identically).
+#   * No protobuf, no adb host lib: the host fastboot chain references neither.
+#   * libc++ is optional (FASTBOOT_USE_LIBCXX). Upstream host fastboot links
+#     libc++_static, but nothing in this chain has adb's standard-layout
+#     asserts, so the default system libstdc++ works (matches Arch's fastboot).
+#     Flip the option ON to link libc++ instead.
+
+cmake_minimum_required(VERSION 3.20)
+project(better_fastboot LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+option(FASTBOOT_USE_LIBCXX "link against libc++ instead of the system libstdc++" OFF)
+option(FASTBOOT_BUILD_FS_TOOLS "also build mke2fs / make_f2fs (needed for `fastboot -w`)" ON)
+if(FASTBOOT_USE_LIBCXX)
+    add_compile_options(-stdlib=libc++)
+    add_link_options(-stdlib=libc++)
+endif()
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo)
+endif()
+
+# ---------------------------------------------------------------- paths
+get_filename_component(AOSP_ROOT_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../aosp-adbd" ABSOLUTE)
+set(AOSP_ROOT "${AOSP_ROOT_DEFAULT}" CACHE PATH "AOSP tree to pull fastboot/liblp/... sources from")
+
+set(FASTBOOT "${AOSP_ROOT}/system/core/fastboot")
+set(SYSCORE  "${AOSP_ROOT}/system/core")
+set(LIBBASE  "${AOSP_ROOT}/system/libbase")
+set(LIBLOG   "${AOSP_ROOT}/system/logging/liblog")
+set(LIBSPARSE "${AOSP_ROOT}/system/core/libsparse")
+set(LIBZIP   "${AOSP_ROOT}/system/libziparchive")
+set(LIBLP    "${AOSP_ROOT}/system/core/fs_mgr/liblp")
+set(LITERAL  "${AOSP_ROOT}/system/core/fs_mgr/libstorage_literals")
+set(EXT4UTIL "${AOSP_ROOT}/system/extras/ext4_utils")
+set(AVB      "${AOSP_ROOT}/external/avb")
+set(MKBOOTIMG "${AOSP_ROOT}/system/tools/mkbootimg")
+set(GTEST    "${AOSP_ROOT}/external/googletest")
+set(FMTLIB   "${AOSP_ROOT}/external/fmtlib")
+set(E2FSPROGS "${AOSP_ROOT}/external/e2fsprogs")
+set(F2FS     "${AOSP_ROOT}/external/f2fs-tools")
+
+if(NOT EXISTS "${FASTBOOT}/Android.bp")
+    message(FATAL_ERROR "AOSP_ROOT=${AOSP_ROOT} does not look like an AOSP tree (missing system/core/fastboot/Android.bp)")
+endif()
+message(STATUS "AOSP tree: ${AOSP_ROOT}")
+
+# --------------------------------------------------------------- patches
+# Source patches for the AOSP tree live in patches/ and are applied to the
+# tree in place. Idempotent: rc=1 means "reversed or previously applied"
+# (patch -N already skips those), which is fine; anything else is fatal.
+#   0001  fastboot_driver_interface.h: include <cstdint> explicitly — the
+#         pinned 2025-03 snapshot omits it and newer libstdc++/libc++ headers
+#         no longer leak uint32_t into it (soong build broke the same way).
+#   0002  super_flash_helper.cpp: include <climits> explicitly (UINT_MAX).
+foreach(_patch
+        0001-fastboot_driver_interface.h-include-cstdint.patch
+        0002-super_flash_helper.cpp-include-climits.patch)
+    execute_process(
+        COMMAND patch -N -s -d "${SYSCORE}" -p1 -i
+                "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"
+        RESULT_VARIABLE _patch_rc ERROR_QUIET)
+    if(NOT _patch_rc EQUAL 0 AND NOT _patch_rc EQUAL 1)
+        message(FATAL_ERROR "Failed to apply ${_patch} to the AOSP tree (rc=${_patch_rc})")
+    endif()
+endforeach()
+
+# --------------------------------------------------------------- shims
+# build/version.h (libbuildversion public header, vendored) +
+# platform_tools_version.h (soong genrule stand-in, generated at configure
+# time). Implementations in shim/.
+#
+# PLATFORM_TOOLS_VERSION: the soong genrule reads the release-config value,
+# unreachable from here. Default "36.0.0" is the platform-tools series the
+# pinned 2025-03 AOSP main snapshot corresponds to; override with
+# -DPLATFORM_TOOLS_VERSION=... to match a different dist.
+set(PLATFORM_TOOLS_VERSION "36.0.0" CACHE STRING "version string reported by `fastboot --version`")
+configure_file(shim/platform_tools_version.h.in
+               "${CMAKE_CURRENT_BINARY_DIR}/gen/include/platform_tools_version.h" @ONLY)
+
+add_library(fb_shim STATIC
+    shim/build_version.cpp
+)
+target_include_directories(fb_shim PUBLIC
+    shim/include
+    "${CMAKE_CURRENT_BINARY_DIR}/gen/include"
+)
+
+# ---------------------------------------------------------- system deps
+find_package(Threads REQUIRED)
+find_package(PkgConfig QUIET)
+find_package(OpenSSL REQUIRED)          # libcrypto: SHA256 for liblp metadata
+if(PkgConfig_FOUND)
+    pkg_check_modules(ZLIB IMPORTED_TARGET zlib)
+endif()
+if(NOT ZLIB_FOUND)
+    message(FATAL_ERROR "system zlib not found via pkg-config")
+endif()
+
+# --------------------------------------------------------------- liblog
+# Host subset of system/logging/liblog (same set the adbd standalone build uses).
+add_library(log_static STATIC
+    ${LIBLOG}/log_event_list.cpp
+    ${LIBLOG}/log_event_write.cpp
+    ${LIBLOG}/logger_name.cpp
+    ${LIBLOG}/logger_read.cpp
+    ${LIBLOG}/logger_write.cpp
+    ${LIBLOG}/logprint.cpp
+    ${LIBLOG}/properties.cpp
+    ${LIBLOG}/event_tag_map.cpp
+)
+target_include_directories(log_static PUBLIC
+    ${LIBLOG}/include
+    ${LIBBASE}/include
+    ${SYSCORE}/libcutils/include
+    ${SYSCORE}/libcutils/include/private
+    ${SYSCORE}/libutils/include
+    ${SYSCORE}/libsystem/include
+    ${SYSCORE}/include
+)
+target_compile_definitions(log_static PRIVATE
+    LIBLOG_LOG_TAG=1006
+    SNET_EVENT_LOG_TAG=1397638484
+    ANDROID_DEBUGGABLE=0
+    _GNU_SOURCE
+)
+
+# ------------------------------------------------------------------ fmtlib
+# libbase's result.h ErrorfImpl uses fmt::vformat; soong builds external/fmtlib
+# (11.0.2) into libbase with -fno-exceptions. Build the same TU here rather
+# than linking the system libfmt — the AOSP headers on base_static's include
+# path must be read against matching library symbols.
+add_library(fmt_static STATIC ${FMTLIB}/src/format.cc)
+target_include_directories(fmt_static PUBLIC ${FMTLIB}/include)
+# soong compiles fmt with -fno-exceptions and un-defines NDEBUG (fmt falls
+# back to assert() checks when exceptions are off).
+target_compile_options(fmt_static PRIVATE -fno-exceptions -UNDEBUG)
+
+# -------------------------------------------------------------- libbase
+add_library(base_static STATIC
+    ${LIBBASE}/abi_compatibility.cpp
+    ${LIBBASE}/chrono_utils.cpp
+    ${LIBBASE}/cmsg.cpp
+    ${LIBBASE}/file.cpp
+    ${LIBBASE}/hex.cpp
+    ${LIBBASE}/logging.cpp
+    ${LIBBASE}/mapped_file.cpp
+    ${LIBBASE}/parsebool.cpp
+    ${LIBBASE}/parsenetaddress.cpp
+    ${LIBBASE}/posix_strerror_r.cpp
+    ${LIBBASE}/process.cpp
+    ${LIBBASE}/properties.cpp
+    ${LIBBASE}/result.cpp
+    ${LIBBASE}/stringprintf.cpp
+    ${LIBBASE}/strings.cpp
+    ${LIBBASE}/threads.cpp
+    ${LIBBASE}/errors_unix.cpp
+)
+target_include_directories(base_static PUBLIC
+    ${LIBBASE}/include
+    ${FMTLIB}/include
+)
+target_link_libraries(base_static PUBLIC log_static fmt_static Threads::Threads)
+
+# -------------------------------------------------------- libcutils sockets
+# fastboot's socket.cpp uses cutils_socket_t + socket_send_buffers et al.
+add_library(cutils_sockets STATIC
+    ${SYSCORE}/libcutils/sockets.cpp
+    ${SYSCORE}/libcutils/socket_inaddr_any_server_unix.cpp
+    ${SYSCORE}/libcutils/socket_local_client_unix.cpp
+    ${SYSCORE}/libcutils/socket_local_server_unix.cpp
+    ${SYSCORE}/libcutils/socket_network_client_unix.cpp
+    ${SYSCORE}/libcutils/sockets_unix.cpp
+)
+target_include_directories(cutils_sockets PUBLIC
+    ${SYSCORE}/libcutils/include
+    ${SYSCORE}/libcutils
+)
+target_link_libraries(cutils_sockets PUBLIC log_static)
+target_compile_definitions(cutils_sockets PRIVATE _GNU_SOURCE)
+
+# --------------------------------------------------------- diagnose_usb
+add_library(diagnose_usb STATIC
+    ${SYSCORE}/diagnose_usb/diagnose_usb.cpp
+)
+target_include_directories(diagnose_usb PUBLIC ${SYSCORE}/diagnose_usb/include)
+target_link_libraries(diagnose_usb PUBLIC base_static)
+
+# ------------------------------------------------------------- libsparse
+add_library(sparse_static STATIC
+    ${LIBSPARSE}/backed_block.cpp
+    ${LIBSPARSE}/output_file.cpp
+    ${LIBSPARSE}/sparse.cpp
+    ${LIBSPARSE}/sparse_crc32.cpp
+    ${LIBSPARSE}/sparse_err.cpp
+    ${LIBSPARSE}/sparse_read.cpp
+)
+target_include_directories(sparse_static PUBLIC
+    ${LIBSPARSE}/include          # <sparse/sparse.h>
+    ${LIBSPARSE}                  # internal backed_block.h etc.
+)
+target_link_libraries(sparse_static PUBLIC base_static PkgConfig::ZLIB)
+target_compile_definitions(sparse_static PRIVATE _FILE_OFFSET_BITS=64)
+
+# ---------------------------------------------------------- libziparchive
+# Reader only (fastboot uses OpenArchive/FindEntry/ExtractEntryToFile); the
+# default libziparchive variant defines INCFS_SUPPORT_DISABLED and needs no
+# signal_handling.cpp on a non-bionic host.
+add_library(ziparchive_static STATIC
+    ${LIBZIP}/zip_archive.cc
+    ${LIBZIP}/zip_archive_stream_entry.cc
+    ${LIBZIP}/zip_cd_entry_map.cc
+    ${LIBZIP}/zip_error.cpp
+)
+target_include_directories(ziparchive_static PUBLIC
+    ${LIBZIP}/include                       # <ziparchive/zip_archive.h>
+    ${LIBZIP}                               # internal zip_archive_private.h etc.
+    ${LIBZIP}/incfs_support/include         # incfs_support/*.h
+    ${GTEST}/googletest/include             # <gtest/gtest_prod.h>
+)
+target_link_libraries(ziparchive_static PUBLIC base_static log_static PkgConfig::ZLIB)
+target_compile_definitions(ziparchive_static PUBLIC
+    INCFS_SUPPORT_DISABLED=1
+    ZLIB_CONST
+    _FILE_OFFSET_BITS=64
+)
+
+# ---------------------------------------------------------- libext4_utils
+add_library(ext4_utils_static STATIC
+    ${EXT4UTIL}/ext4_utils.cpp
+    ${EXT4UTIL}/wipe.cpp
+    ${EXT4UTIL}/ext4_sb.cpp
+)
+target_include_directories(ext4_utils_static PUBLIC ${EXT4UTIL}/include)
+target_link_libraries(ext4_utils_static PUBLIC base_static PkgConfig::ZLIB)
+target_compile_definitions(ext4_utils_static PRIVATE _FILE_OFFSET_BITS=64)
+target_compile_options(ext4_utils_static PRIVATE -fno-strict-aliasing)
+
+# ----------------------------------------------------------------- liblp
+add_library(lp_static STATIC
+    ${LIBLP}/builder.cpp
+    ${LIBLP}/super_layout_builder.cpp
+    ${LIBLP}/images.cpp
+    ${LIBLP}/partition_opener.cpp
+    ${LIBLP}/property_fetcher.cpp
+    ${LIBLP}/reader.cpp
+    ${LIBLP}/utility.cpp
+    ${LIBLP}/writer.cpp
+)
+target_include_directories(lp_static PUBLIC
+    ${LIBLP}/include            # <liblp/liblp.h>
+    ${LIBLP}                    # internal reader.h/writer.h/utility.h/images.h
+    ${LITERAL}                  # <storage_literals/storage_literals.h>
+)
+target_link_libraries(lp_static PUBLIC
+    base_static log_static sparse_static ext4_utils_static
+    OpenSSL::Crypto
+)
+target_compile_definitions(lp_static PRIVATE _FILE_OFFSET_BITS=64)
+
+# ------------------------------------------------------------- fastboot
+# Common include dirs for the fastboot translation units.
+set(FB_INCS
+    ${FASTBOOT}                 # "fastboot.h", "transport.h", ...
+    ${AVB}                      # <libavb/libavb.h>
+    ${MKBOOTIMG}/include/bootimg # <bootimg.h>
+    ${SYSCORE}/diagnose_usb/include
+)
+
+add_library(fastboot_static STATIC
+    ${FASTBOOT}/bootimg_utils.cpp
+    ${FASTBOOT}/fastboot_driver.cpp
+    ${FASTBOOT}/fastboot.cpp
+    ${FASTBOOT}/filesystem.cpp
+    ${FASTBOOT}/fs.cpp
+    ${FASTBOOT}/socket.cpp
+    ${FASTBOOT}/storage.cpp
+    ${FASTBOOT}/super_flash_helper.cpp
+    ${FASTBOOT}/tcp.cpp
+    ${FASTBOOT}/udp.cpp
+    ${FASTBOOT}/util.cpp
+    ${FASTBOOT}/vendor_boot_img_utils.cpp
+    ${FASTBOOT}/task.cpp
+    ${FASTBOOT}/usb_linux.cpp     # official Linux USB backend (usbdevicefs)
+)
+target_include_directories(fastboot_static PUBLIC ${FB_INCS})
+target_compile_definitions(fastboot_static PUBLIC
+    ANDROID_BASE_UNIQUE_FD_DISABLE_IMPLICIT_CONVERSION
+    _FILE_OFFSET_BITS=64
+    _GNU_SOURCE
+)
+target_link_libraries(fastboot_static PUBLIC
+    lp_static
+    ziparchive_static
+    sparse_static
+    ext4_utils_static
+    diagnose_usb
+    cutils_sockets
+    base_static
+    log_static
+    fb_shim
+    PkgConfig::ZLIB
+    OpenSSL::Crypto
+    Threads::Threads
+)
+
+add_executable(fastboot ${FASTBOOT}/main.cpp)
+target_link_libraries(fastboot PRIVATE fastboot_static)
+target_compile_options(fastboot_static PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+
+install(TARGETS fastboot RUNTIME DESTINATION bin)
+
+# ---------------------------------------------------------------- fs tools
+if(FASTBOOT_BUILD_FS_TOOLS)
+    include(cmake/fs_tools.cmake)
+endif()

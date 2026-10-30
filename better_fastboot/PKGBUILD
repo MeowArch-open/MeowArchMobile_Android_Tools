@@ -1,0 +1,57 @@
+# Maintainer: MeowArchMobile
+# fastboot-meowarch — AOSP's official host fastboot tool, built standalone.
+#
+# This PKGBUILD runs in-place inside better_fastboot/ next to a checkout of
+# the AOSP tree (../aosp-adbd, shared with adbd-standalone). Build first:
+#
+#   cd better_fastboot
+#   ./scripts/fetch-aosp.sh            # once
+#   cmake -B build-native -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+#         -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+#   cmake --build build-native -j$(nproc)
+#   makepkg -f
+#
+# Layout rationale: fastboot locates mke2fs / make_f2fs / mke2fs.conf via
+# GetExecutableDirectory() (/proc/self/exe), so the real binaries all live in
+# /usr/lib/fastboot-meowarch/ and /usr/bin/fastboot-meowarch is a symlink —
+# the symlink resolves through /proc/self/exe and the helpers are found.
+# Nothing collides with the distro's android-tools package (its /usr/bin/
+# fastboot stays untouched); both can be installed side by side.
+
+pkgname=fastboot-meowarch
+pkgver=36.0.0
+pkgrel=1
+pkgdesc="AOSP host fastboot tool (official usb_linux backend), built standalone — with Android mke2fs/make_f2fs for 'fastboot -w'"
+arch=('x86_64')
+url="https://android.googlesource.com/platform/system/core/"
+license=('Apache' 'BSD' 'GPL2' 'LGPL2.1' 'MIT')
+depends=('glibc' 'gcc-libs' 'zlib' 'openssl' 'libutil-linux')
+makedepends=('cmake' 'clang' 'ninja' 'pkgconf')
+optdepends=('android-udev: udev rules so fastboot sees phones without root')
+provides=('fastboot-aosp')
+install=fastboot.install
+options=(!strip)             # keep debug info; RelWithDebInfo
+
+package() {
+    local root
+    root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+    local libdir="$pkgdir/usr/lib/fastboot-meowarch"
+
+    install -Dm755 "$root/build-native/fastboot"             "$libdir/fastboot"
+    install -Dm755 "$root/build-native/mke2fs"               "$libdir/mke2fs"
+    install -Dm755 "$root/build-native/make_f2fs"            "$libdir/make_f2fs"
+    install -Dm755 "$root/build-native/make_f2fs_casefold"   "$libdir/make_f2fs_casefold"
+    # the Android mke2fs profile fastboot points MKE2FS_CONFIG at (from the
+    # AOSP tree; cmake's install rule would put it in bin/, but package()
+    # reads the source of truth directly)
+    install -Dm644 "$root/../aosp-adbd/system/extras/ext4_utils/mke2fs.conf" \
+        "$libdir/mke2fs.conf"
+
+    install -Dm755 /dev/null "$pkgdir/usr/bin/fastboot-meowarch"
+    rm "$pkgdir/usr/bin/fastboot-meowarch"
+    ln -s ../lib/fastboot-meowarch/fastboot "$pkgdir/usr/bin/fastboot-meowarch"
+
+    # bash/zsh completions ship with the AOSP tree
+    install -Dm644 "$root/../aosp-adbd/system/core/fastboot/fastboot.bash" \
+        "$pkgdir/usr/share/bash-completion/completions/fastboot-meowarch"
+}

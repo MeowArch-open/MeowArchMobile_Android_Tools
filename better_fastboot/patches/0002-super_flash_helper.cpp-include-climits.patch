@@ -1,0 +1,11 @@
+--- a/fastboot/super_flash_helper.cpp
++++ b/fastboot/super_flash_helper.cpp
+@@ -16,6 +16,8 @@
+ 
+ #include "super_flash_helper.h"
+ 
++#include <climits>
++
+ #include <android-base/logging.h>
+ 
+ #include "util.h"

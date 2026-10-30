@@ -3,6 +3,9 @@ adbd-standalone/build-*/
 adbd-standalone/sysroot-aarch64/
 adbd-standalone/pkg/
 adbd-standalone/src/
+better_fastboot/build-*/
+better_fastboot/pkg/
+better_fastboot/src/
 *.pkg.tar.zst
 *.pkg.tar.xz
 

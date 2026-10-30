@@ -1,0 +1,10 @@
+// MeowArchMobile fastboot standalone build — platform_tools_version stand-in.
+//
+// AOSP's soong stamps host tools with the platform-tools version via a
+// genrule ("platform_tools_version"). Neither the genrule nor the
+// release-config value is reachable from a standalone build, so generate the
+// header at configure time: -DPLATFORM_TOOLS_VERSION=... (defaults to the
+// platform-tools series the pinned 2025-03 AOSP main snapshot corresponds to).
+#pragma once
+
+#define PLATFORM_TOOLS_VERSION "@PLATFORM_TOOLS_VERSION@"
