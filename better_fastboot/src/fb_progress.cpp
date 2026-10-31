@@ -13,6 +13,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <string>
 
@@ -48,10 +53,24 @@ double Now() {
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+// stderr must be a real console for the bar to make sense (it repaints the
+// line with \r). On Windows that means GetConsoleMode, not _isatty: a NUL
+// redirect is still a character device and would be mistaken for a terminal.
+bool StderrIsTerminal() {
+#ifdef _WIN32
+    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD mode = 0;
+    if (h == NULL || h == INVALID_HANDLE_VALUE) return false;
+    return GetConsoleMode(h, &mode) != 0;
+#else
+    return isatty(STDERR_FILENO) == 1;
+#endif
+}
+
 bool Detect() {
     const char* np = getenv("NO_PROGRESS");
     if (np && np[0] != '\0') return false;
-    if (!isatty(STDERR_FILENO)) return false;
+    if (!StderrIsTerminal()) return false;
     const char* term = getenv("TERM");
     if (term && term[0] && !strcmp(term, "dumb")) return false;
     return true;

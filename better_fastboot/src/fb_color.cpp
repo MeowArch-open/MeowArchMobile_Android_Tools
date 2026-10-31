@@ -7,11 +7,34 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#endif
+
 namespace fbcolor {
 namespace {
 
 bool g_enabled = false;
 bool g_forced = false;  // set by --color; overrides tty detection only, not NO_COLOR
+
+// Is stderr a real console?
+//
+// POSIX isatty() is not enough on Windows: redirecting to the NUL device
+// (`2>nul`, or `2>/dev/null` under MSYS bash) hands us a *character device*,
+// which _isatty() happily reports as a terminal — and colours then leak into
+// piped output (caught by the windows-latest CI parity test). GetConsoleMode
+// is the accurate test: it succeeds only for an actual console screen buffer.
+bool StderrIsTerminal() {
+#ifdef _WIN32
+    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD mode = 0;
+    if (h == NULL || h == INVALID_HANDLE_VALUE) return false;
+    return GetConsoleMode(h, &mode) != 0;
+#else
+    return isatty(STDERR_FILENO) == 1;
+#endif
+}
 
 bool Detect() {
     // NO_COLOR wins over everything, including FORCE_COLOR and --color.
@@ -21,7 +44,7 @@ bool Detect() {
     const char* force = getenv("FORCE_COLOR");
     if (force && force[0] != '\0' && force[0] != '0') return true;
 
-    if (!isatty(STDERR_FILENO)) return false;
+    if (!StderrIsTerminal()) return false;
 
     const char* term = getenv("TERM");
     if (!term || !term[0] || !strcmp(term, "dumb")) return false;
