@@ -5,7 +5,7 @@ adbd-standalone/pkg/
 adbd-standalone/src/
 better_fastboot/build-*/
 better_fastboot/pkg/
-better_fastboot/src/
+# NOTE: better_fastboot/src/ is real source (the UX glue library) — tracked.
 *.pkg.tar.zst
 *.pkg.tar.xz
 

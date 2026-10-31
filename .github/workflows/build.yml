@@ -205,6 +205,18 @@ jobs:
           "$FB/make_f2fs" -S 209715200 -g android f2.img >/dev/null 2>&1
           python3 -c "import struct;m,=struct.unpack('<I',open('/tmp/f2.img','rb').read(4));assert m==0xed26ff3a,'not sparse'"
 
+      - name: UX self-test (color / progress / i18n / Did-you-want)
+        working-directory: better_fastboot
+        run: |
+          # unit-level checks (no device): suggestion ranking, i18n table
+          # integrity incl. format-specifier parity across languages, help-row
+          # well-formedness.
+          ./build-native/fastboot_selftest
+          # end-to-end: byte-parity of piped English output, Did-you-want on
+          # `flass`, NO_COLOR/NO_PROGRESS opt-outs, and a live progress bar +
+          # speed readout against a mock TCP fastboot device (pty capture).
+          bash scripts/test-ux.sh
+
       - name: Package (makepkg)
         working-directory: better_fastboot
         run: |

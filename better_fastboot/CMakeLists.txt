@@ -33,6 +33,15 @@
 cmake_minimum_required(VERSION 3.20)
 project(better_fastboot LANGUAGES C CXX)
 
+# GCC compatibility (AOSP sources are clang-built in soong):
+#   * __builtin_available(android N, *) is a clang extension; shim/compat.h
+#     is force-included so GCC takes the same android-30 branch clang does.
+#   * liblog's logger.h needs C11 <stdatomic.h> names in C++ mode
+#     (shim/gnu_compat/stdatomic.h, see log_static below).
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options(-include "${CMAKE_CURRENT_SOURCE_DIR}/shim/gnu_compat/compat.h")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
@@ -82,11 +91,20 @@ message(STATUS "AOSP tree: ${AOSP_ROOT}")
 #         pinned 2025-03 snapshot omits it and newer libstdc++/libc++ headers
 #         no longer leak uint32_t into it (soong build broke the same way).
 #   0002  super_flash_helper.cpp: include <climits> explicitly (UINT_MAX).
+#   0003  MeowArchMobile UX integration: color (fbglue/fb_color), live
+#         progress + speed bar (fb_progress via a driver progress callback),
+#         localized messages/help (fb_i18n + fb_help), and "Did you want X?"
+#         typo suggestions (fb_suggest). Touches fastboot.cpp,
+#         fastboot_driver.{h,cpp} and util.cpp only; all behavior lives in
+#         src/ (compiled as fastboot_glue below), the patch just wires hooks.
 foreach(_patch
         0001-fastboot_driver_interface.h-include-cstdint.patch
-        0002-super_flash_helper.cpp-include-climits.patch)
+        0002-super_flash_helper.cpp-include-climits.patch
+        0003-fastboot-ux-color-progress-i18n-suggest.patch)
+    # -r /dev/null: when patch -N skips an already-applied hunk it would
+    # otherwise litter the tree with .rej files on every re-configure.
     execute_process(
-        COMMAND patch -N -s -d "${SYSCORE}" -p1 -i
+        COMMAND patch -N -s -r /dev/null -d "${SYSCORE}" -p1 -i
                 "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"
         RESULT_VARIABLE _patch_rc ERROR_QUIET)
     if(NOT _patch_rc EQUAL 0 AND NOT _patch_rc EQUAL 1)
@@ -153,6 +171,13 @@ target_compile_definitions(log_static PRIVATE
     ANDROID_DEBUGGABLE=0
     _GNU_SOURCE
 )
+
+# GCC compatibility: liblog's logger.h declares `atomic_int fd` after
+# including <stdatomic.h>, which clang exposes in C++ mode but g++ does not.
+# Prepend a shim that maps the C11 atomic names onto <atomic> for GCC only.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_include_directories(log_static BEFORE PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/shim/gnu_compat")
+endif()
 
 # ------------------------------------------------------------------ fmtlib
 # libbase's result.h ErrorfImpl uses fmt::vformat; soong builds external/fmtlib
@@ -287,6 +312,27 @@ target_link_libraries(lp_static PUBLIC
 )
 target_compile_definitions(lp_static PRIVATE _FILE_OFFSET_BITS=64)
 
+# ------------------------------------------------------ fastboot glue (UX)
+# MeowArchMobile additions compiled alongside the upstream sources: color,
+# live progress bar + speed, message catalog (i18n), generated help renderer
+# and "Did you want X?" typo suggestions. Patch 0003 wires the upstream tree
+# into this library; everything else here is self-contained.
+add_library(fastboot_glue STATIC
+    src/fb_color.cpp
+    src/fb_progress.cpp
+    src/fb_i18n.cpp
+    src/fb_i18n_en.cpp
+    src/fb_i18n_zh_cn.cpp
+    src/fb_i18n_zh_tw.cpp
+    src/fb_i18n_ja.cpp
+    src/fb_help.cpp
+    src/fb_suggest.cpp
+    src/fbglue.cpp
+)
+target_include_directories(fastboot_glue PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(fastboot_glue PUBLIC base_static)
+target_compile_options(fastboot_glue PRIVATE -Wall -Wextra)
+
 # ------------------------------------------------------------- fastboot
 # Common include dirs for the fastboot translation units.
 set(FB_INCS
@@ -319,6 +365,7 @@ target_compile_definitions(fastboot_static PUBLIC
     _GNU_SOURCE
 )
 target_link_libraries(fastboot_static PUBLIC
+    fastboot_glue
     lp_static
     ziparchive_static
     sparse_static
@@ -338,6 +385,13 @@ target_link_libraries(fastboot PRIVATE fastboot_static)
 target_compile_options(fastboot_static PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 
 install(TARGETS fastboot RUNTIME DESTINATION bin)
+
+# ---------------------------------------------------- self-test (no device)
+# Checks suggestion ranking, i18n table integrity (format specifiers must
+# match English in every language or StringPrintf would trip at runtime) and
+# help-row well-formedness. Run in CI.
+add_executable(fastboot_selftest src/fb_selftest.cpp)
+target_link_libraries(fastboot_selftest PRIVATE fastboot_glue)
 
 # ---------------------------------------------------------------- fs tools
 if(FASTBOOT_BUILD_FS_TOOLS)

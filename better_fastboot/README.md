@@ -11,6 +11,22 @@ in bootloader/fastbootd mode out of the box.
 Companion to [../adbd-standalone](../adbd-standalone) (the device-side
 daemon); shares the same partial AOSP checkout in `../aosp-adbd`.
 
+On top of upstream behavior this build adds four UX features (all
+opt-out-able, all no-ops on a non-tty so piped output stays byte-identical):
+
+1. **Live progress bar** with instantaneous speed and ETA while
+   downloading/uploading/fetching (`NO_PROGRESS=1` or `--no-progress` to
+   disable).
+2. **"Did you want 'flash'?"** typo suggestions instead of the terse
+   upstream error — `fastboot flass` suggests `flash` instantly, before any
+   device wait.
+3. **Colors** in terminals that support them (`NO_COLOR=1` / `--no-color` to
+   disable, `--color` / `FORCE_COLOR=1` to force on a pipe).
+4. **Multiple languages** — English (byte-identical to upstream), Simplified
+   Chinese, Traditional Chinese, Japanese. Selected via `--lang=CODE`,
+   `LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, or `LANG`; list them with
+   `--list-langs`.
+
 ## What gets built
 
 | binary                 | purpose                                                                  |
@@ -39,10 +55,46 @@ dist — the package installs them side by side (see PKGBUILD for the
             (both: the pinned 2025-03 snapshot relies on transitive includes
             that modern stdlib headers no longer leak; soong would break the
             same way today)
+      0003  UX integration: one-line hooks into fastboot.cpp /
+            fastboot_driver.{h,cpp} / util.cpp calling the glue library in
+            src/ — progress callback in the driver's transfer loops,
+            localized prolog/epilog/error strings, colored OKAY/FAILED,
+            Did-you-want on unknown commands/options (validated BEFORE the
+            device-wait), and --lang/--color/--no-progress getopt entries.
+            The fd-download path also gains 1 MiB transport chunking so the
+            bar advances (protocol-transparent: the device consumes exactly
+            the DATA byte count regardless of framing).
+    src/                  the UX glue library (fastboot_glue), no AOSP code:
+      fb_progress.{h,cpp}   bar renderer: throttle, speed ring buffer, ETA
+      fb_color.{h,cpp}      SGR escapes; tty/NO_COLOR/FORCE_COLOR detection
+      fb_i18n.{h,cpp}       X-macro message IDs + per-locale table registry
+      fb_i18n_en.cpp        English (matches upstream wording exactly)
+      fb_i18n_zh_cn.cpp     Simplified Chinese
+      fb_i18n_zh_tw.cpp     Traditional Chinese (opencc s2t + TW terminology)
+      fb_i18n_ja.cpp        Japanese
+      fb_i18n_en_generated.h  GENERATED — help rows transcribed from upstream
+                            show_help() (see scripts/gen-help-entries.py)
+      fb_help.{h,cpp}       help renderer reproducing upstream's exact column
+                            layout (cmd col 1-28, desc col 29, overflow rules)
+      fb_suggest.{h,cpp}    Levenshtein + prefix/substring ranking over the
+                            command/option vocabularies
+      fbglue.{h,cpp}        the API the patch calls: EarlyInit, Validate-
+                            FirstCommand, UnknownCommandError, ListLangs, ...
     shim/                 build version stamp + platform_tools_version.h.in
                           (generated at configure time; -DPLATFORM_TOOLS_VERSION=...)
+                          gnu_compat/: GCC-only shims — force-included compat.h
+                          (__builtin_available) and stdatomic.h for liblog
+                          (AOSP sources are clang-built in soong; clang builds
+                          use neither)
     scripts/fetch-aosp.sh fetches the partial AOSP checkout (pinned SHAs)
                           into ../aosp-adbd (shared with adbd-standalone)
+    scripts/gen-help-entries.py
+                          regenerates src/fb_i18n_en_generated.h from the
+                          AOSP tree's fastboot.cpp (run after bumping SHAs)
+    scripts/test-ux.sh    UX smoke suite: selftest + byte-parity + Did-you-want
+                          + NO_COLOR/NO_PROGRESS + live bar against tests/
+                          mock_device.py (mock TCP fastboot device, pty capture)
+    tests/mock_device.py  the mock device (FB01 framing, throttled ingest)
     PKGBUILD              Arch package `fastboot-meowarch` (x86_64)
 
 ## Upstream
@@ -83,6 +135,8 @@ snapshot; override with `-DPLATFORM_TOOLS_VERSION=...`).
     ./scripts/fetch-aosp.sh                                          # once: ../aosp-adbd
     cmake -B build-native -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
     cmake --build build-native -j$(nproc)
+    ./build-native/fastboot_selftest                                 # unit checks (no device)
+    bash scripts/test-ux.sh                                          # full UX smoke suite
     makepkg -f                                                       # package (x86_64)
 
 GCC works too (drop the `-DCMAKE_*_COMPILER` flags). Knobs:
@@ -106,6 +160,34 @@ as root.
 TCP/UDP fastboot (emulators, network fastboot):
 
     fastboot -s tcp:192.168.1.20:5554 devices
+
+### MeowArchMobile additions
+
+    fastboot --list-langs              # en, zh_CN, zh_TW, ja
+    fastboot --lang=zh_CN devices      # one-shot language override
+    LANG=ja_JP.UTF-8 fastboot --help   # or via the usual locale variables
+    fastboot --no-color ...            # plain output (NO_COLOR=1 also works)
+    fastboot --color ...               # force colors even on a pipe
+    fastboot --no-progress ...         # no bar (NO_PROGRESS=1 also works)
+
+Typo handling — errors out immediately (before any `< waiting for any
+device >`), with a suggestion when something is close:
+
+    $ fastboot flass boot boot.img
+    fastboot: error: unknown command flass
+    Did you want 'flash'?
+    Run 'fastboot --help' for usage.
+
+Progress bar (tty only): renders on the `Sending/Writing/Fetching/Uploading`
+lines with percent, bytes, instantaneous speed (MiB/s, sampled over a short
+ring buffer) and ETA, then cleans the line back to upstream's exact
+`OKAY [x.xxxs]` format. Bootloader INFO chatter hides the bar, prints, and
+the bar resumes.
+
+Byte-parity guarantees (checked in CI): with colors/progress off (any pipe)
+and `LANG=en`, `--help`/`--version`/error output match upstream exactly —
+except the five extra options appended to the help and the `Did you want`
+hint replacing the bare `unknown command` line.
 
 ## Known quirks (all upstream behavior, not build bugs)
 
