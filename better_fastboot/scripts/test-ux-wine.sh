@@ -62,6 +62,15 @@ if printf '%s' "$OUT" | grep -q "您是否想输入 'flash'"; then ok "zh_CN sug
 OUT="$(LANG=ja_JP.UTF-8 wfb --list-langs)"
 if printf '%s' "$OUT" | grep -q "日本語"; then ok "ja --list-langs"; else bad "ja: $OUT"; fi
 
+# completion script generation (same generator as the Linux build)
+OUT="$("$FB" --shell-completion=bash 2>/dev/null | tr -d '\r')"
+if printf '%s' "$OUT" | grep -q "complete -F _fastboot_meowarch" && \
+   printf '%s' "$OUT" | grep -q "flash"; then
+    ok "--shell-completion=bash on Windows"
+else
+    bad "--shell-completion=bash on Windows"
+fi
+
 echo "== 4. live flash via mock TCP device (ws2_32 path) =="
 if ! command -v python3 >/dev/null 2>&1; then
     skip "python3 unavailable"

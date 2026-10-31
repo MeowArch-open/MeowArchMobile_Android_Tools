@@ -20,7 +20,7 @@
 
 pkgname=fastboot-meowarch
 pkgver=36.0.0
-pkgrel=1
+pkgrel=2
 pkgdesc="AOSP host fastboot tool (official usb_linux backend), built standalone — with Android mke2fs/make_f2fs for 'fastboot -w'"
 arch=('x86_64')
 url="https://android.googlesource.com/platform/system/core/"
@@ -51,7 +51,16 @@ package() {
     rm "$pkgdir/usr/bin/fastboot-meowarch"
     ln -s ../lib/fastboot-meowarch/fastboot "$pkgdir/usr/bin/fastboot-meowarch"
 
-    # bash/zsh completions ship with the AOSP tree
-    install -Dm644 "$root/../aosp-adbd/system/core/fastboot/fastboot.bash" \
-        "$pkgdir/usr/share/bash-completion/completions/fastboot-meowarch"
+    # Shell completions for bash, zsh and fish — GENERATED from the built
+    # binary (`--shell-completion=SHELL`), so the vocabulary always matches
+    # this exact build (commands, long options incl. our --lang/--color/...,
+    # languages, partitions, getvar names). The upstream fastboot.bash that
+    # shipped here before was stale (2017-era command list, completes plain
+    # `fastboot`, and misses every MeowArchMobile addition).
+    "$root/build-native/fastboot" --shell-completion=bash |
+        install -Dm644 /dev/stdin "$pkgdir/usr/share/bash-completion/completions/fastboot-meowarch"
+    "$root/build-native/fastboot" --shell-completion=zsh |
+        install -Dm644 /dev/stdin "$pkgdir/usr/share/zsh/site-functions/_fastboot-meowarch"
+    "$root/build-native/fastboot" --shell-completion=fish |
+        install -Dm644 /dev/stdin "$pkgdir/usr/share/fish/vendor_completions.d/fastboot-meowarch.fish"
 }

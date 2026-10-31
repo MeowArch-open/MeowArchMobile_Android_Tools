@@ -403,6 +403,7 @@ add_library(fastboot_glue STATIC
     src/fb_i18n_ja.cpp
     src/fb_help.cpp
     src/fb_suggest.cpp
+    src/fb_completion.cpp
     src/fbglue.cpp
 )
 target_include_directories(fastboot_glue PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")

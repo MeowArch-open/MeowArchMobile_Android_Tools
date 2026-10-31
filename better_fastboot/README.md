@@ -78,6 +78,8 @@ dist — the package installs them side by side (see PKGBUILD for the
                             layout (cmd col 1-28, desc col 29, overflow rules)
       fb_suggest.{h,cpp}    Levenshtein + prefix/substring ranking over the
                             command/option vocabularies
+      fb_completion.{h,cpp} --shell-completion={bash,zsh,fish} script generator
+                            (same vocabularies as fb_suggest + help rows)
       fbglue.{h,cpp}        the API the patch calls: EarlyInit, Validate-
                             FirstCommand, UnknownCommandError, ListLangs, ...
     shim/                 build version stamp + platform_tools_version.h.in
@@ -209,6 +211,7 @@ TCP/UDP fastboot (emulators, network fastboot):
     fastboot --no-color ...            # plain output (NO_COLOR=1 also works)
     fastboot --color ...               # force colors even on a pipe
     fastboot --no-progress ...         # no bar (NO_PROGRESS=1 also works)
+    fastboot --shell-completion=bash   # completion script (also zsh, fish)
 
 Typo handling — errors out immediately (before any `< waiting for any
 device >`), with a suggestion when something is close:
@@ -228,6 +231,35 @@ Byte-parity guarantees (checked in CI): with colors/progress off (any pipe)
 and `LANG=en`, `--help`/`--version`/error output match upstream exactly —
 except the five extra options appended to the help and the `Did you want`
 hint replacing the bare `unknown command` line.
+
+### Shell completions (bash / zsh / fish)
+
+The binary generates its own completion scripts, so the vocabulary always
+matches the build — commands and long options come from the same tables that
+power Did-you-want, descriptions from the same generated help rows, and
+`--lang` completes the compiled-in language list:
+
+    fastboot --shell-completion=bash > /usr/share/bash-completion/completions/fastboot-meowarch
+    fastboot --shell-completion=zsh  > /usr/share/zsh/site-functions/_fastboot-meowarch
+    fastboot --shell-completion=fish > /usr/share/fish/vendor_completions.d/fastboot-meowarch.fish
+
+The Arch package runs exactly these at package() time (that is why the
+upstream 2017-era `fastboot.bash` is no longer shipped: it predates half of
+today's command set and knows nothing about our options).
+
+What completes: all commands and options before/instead of a command;
+partitions after `flash/erase/format/fetch`; `*.img` files after
+`flash PARTITION`, `boot`, `stage`, `wipe-super`; `*.zip` after `update`;
+getvar variable names after `getvar`; slots after `--slot`/`--set-active`/
+`set_active` (both `--slot a` and `--slot=a` forms); reboot targets after
+`reboot`; `flashing`/`gsi`/`snapshot-update` subcommands; languages after
+`--lang`; serials of currently connected devices after `-s` (calls
+`fastboot devices`).
+
+Deliberately hidden from `--help` (byte-parity); unknown shells exit 1 with
+an error. All three scripts are functionally tested in `scripts/test-ux.sh`
+(bash/fish drives inline; zsh via `scripts/test-completions.zsh`, skipped
+when zsh is absent).
 
 ## Known quirks (all upstream behavior, not build bugs)
 

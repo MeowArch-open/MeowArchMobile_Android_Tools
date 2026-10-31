@@ -12,9 +12,25 @@
  */
 #pragma once
 
+#include <stddef.h>
+
+#include "fb_i18n.h"
+
 namespace fbhelp {
 
 // Print the full help text to stdout. Returns 0 (a Main() return value).
 int ShowHelp();
+
+// The five MeowArchMobile options appended to upstream's help (they have no
+// row in the generated table). |en| is the English "cmd\tdesc" text used when
+// the active language has no translation; |id| is the translated message ID.
+// Exposed so the completion-script generator can source the same descriptions
+// as --help instead of duplicating them.
+struct ExtraOption {
+    const char* key;  // bare option, e.g. "--lang"
+    const char* en;   // "--lang=CODE\tSet interface language ..."
+    fbi18n::Msg id;
+};
+const ExtraOption* ExtraOptions(size_t* count);
 
 }  // namespace fbhelp

@@ -136,6 +136,102 @@ else
   fi
 fi
 
+echo "== 5. shell completions (bash/zsh/fish) =="
+for SH in bash zsh fish; do
+  OUT="$(LANG=en_US.UTF-8 "$FB" --shell-completion=$SH 2>/dev/null)"
+  RC=$?
+  if [ $RC -eq 0 ] && [ "$(printf '%s\n' "$OUT" | grep -c '')" -gt 30 ]; then
+    ok "--shell-completion=$SH generated ($(printf '%s\n' "$OUT" | wc -w) words)"
+  else
+    bad "--shell-completion=$SH (rc=$RC, $(printf '%s\n' "$OUT" | grep -c '') lines)"
+  fi
+  # the vocabulary must come from the binary: a command, a long option, and
+  # our own additions must all appear. (fish spells long options as
+  # `-l 'slot'` without the dashes, so match those separately.)
+  if [ "$SH" = "fish" ]; then
+    for WANT in "flash" "'slot'" "zh_TW" "getvar"; do
+      printf '%s' "$OUT" | grep -q -- "$WANT" || bad "$SH script missing '$WANT'"
+    done
+  else
+    for WANT in "flash" "--slot" "zh_TW" "getvar"; do
+      printf '%s' "$OUT" | grep -q -- "$WANT" || bad "$SH script missing '$WANT'"
+    done
+  fi
+done
+printf '%s\n' "$("$FB" --shell-completion=bash)" > /tmp/fbcomp.bash
+bash -n /tmp/fbcomp.bash && ok "bash script parses (bash -n)" || bad "bash -n failed"
+if command -v fish >/dev/null 2>&1; then
+  "$FB" --shell-completion=fish > /tmp/fbcomp.fish
+  fish -n /tmp/fbcomp.fish && ok "fish script parses (fish -n)" || bad "fish -n failed"
+else
+  skip "fish not installed"
+fi
+OUT="$("$FB" --shell-completion=csh 2>&1)"; RC=$?
+if [ $RC -eq 1 ] && printf '%s' "$OUT" | grep -q "unknown shell 'csh'"; then
+  ok "unknown shell errors (rc=1)"
+else
+  bad "unknown shell: rc=$RC out=$OUT"
+fi
+# bash functional drive: source the generated script and check candidate sets
+if [ -f /usr/share/bash-completion/bash_completion ] || true; then
+  cat > /tmp/fbcomp-drive.sh <<EOS
+source /tmp/fbcomp.bash
+PASS=0; FAIL=0
+try() {
+  local desc="\$1" want="\$2"; shift 2
+  COMP_WORDS=("\$@"); COMP_CWORD=\$(( \${#COMP_WORDS[@]} - 1 ))
+  COMPREPLY=()
+  _fastboot_meowarch
+  case "\${COMPREPLY[*]}" in *"\$want"*) PASS=\$((PASS+1));; *) echo "  FAIL \$desc"; FAIL=\$((FAIL+1));; esac
+}
+try "cmds"  "flash"         fastboot-meowarch ""
+try "parts" "vendor_boot"   fastboot-meowarch "flash" ""
+try "vars"  "current-slot"  fastboot-meowarch "getvar" ""
+try "langs" "zh_TW"         fastboot-meowarch "--lang" ""
+try "slots" "other"         fastboot-meowarch "--slot" ""
+echo "drive: \$PASS passed, \$FAIL failed"
+[ "\$FAIL" -eq 0 ]
+EOS
+  if bash /tmp/fbcomp-drive.sh; then ok "bash functional drive (5 vocab checks)"; else bad "bash functional drive"; fi
+fi
+# zsh functional drive (17 vocab checks) when a zsh is available
+if command -v zsh >/dev/null 2>&1; then
+  "$FB" --shell-completion=zsh > /tmp/fbcomp-zsh
+  if zsh -f "$HERE/scripts/test-completions.zsh" /tmp/fbcomp-zsh | tail -1 | grep -q " 0 failed"; then
+    ok "zsh functional drive (scripts/test-completions.zsh)"
+  else
+    bad "zsh functional drive"; zsh -f "$HERE/scripts/test-completions.zsh" /tmp/fbcomp-zsh 2>&1 | tail -5
+  fi
+else
+  skip "zsh not installed (functional drive skipped; syntax-level checks above still ran)"
+fi
+# fish functional drive via `complete -C` (needs the binary on PATH as
+# fastboot-meowarch, matching the completion's -c name)
+if command -v fish >/dev/null 2>&1; then
+  mkdir -p /tmp/fbcomp-fishbin /tmp/fbcomp-fishcomp
+  ln -sf "$(readlink -f "$FB")" /tmp/fbcomp-fishbin/fastboot-meowarch
+  "$FB" --shell-completion=fish > /tmp/fbcomp-fishcomp/fastboot-meowarch.fish
+  FISHPASS=0; FISHFAIL=0
+  fish_try() {
+    # source the generated script, then ask fish for candidates
+    if fish -c "source /tmp/fbcomp-fishcomp/fastboot-meowarch.fish; complete -C 'fastboot-meowarch $2'" 2>/dev/null | grep -q -- "$3"; then
+      ok "fish drive: $1"; FISHPASS=$((FISHPASS+1))
+    else
+      bad "fish drive: $1"; FISHFAIL=$((FISHFAIL+1))
+    fi
+  }
+  # PATH must include the wrapper for `complete -C` to resolve the command.
+  export PATH="/tmp/fbcomp-fishbin:$PATH"
+  fish_try "flas->flash"      "flas"          "flash"
+  fish_try "flash->parts"     "flash "        "vendor_boot"
+  fish_try "getvar->vars"     "getvar "       "current-slot"
+  fish_try "--slot->slots"    "--slot "       "other"
+  fish_try "--lang->langs"    "--lang "       "zh_TW"
+  export PATH="${PATH#/tmp/fbcomp-fishbin:}"
+else
+  skip "fish not installed (functional drive skipped)"
+fi
+
 echo
 echo "== summary: $PASS passed, $FAIL failed, $SKIP skipped =="
 [ "$FAIL" -eq 0 ]

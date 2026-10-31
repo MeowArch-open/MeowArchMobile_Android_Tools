@@ -125,18 +125,10 @@ int ShowHelp() {
         }
     }
     // Our extra options (appended to upstream's list, translated like the rest).
-    static const struct {
-        fbi18n::Msg id;
-        const char* en;
-    } extras[] = {
-        {fbi18n::kOLang, "--lang=CODE\tSet interface language (see --list-langs)."},
-        {fbi18n::kOListLangs, "--list-langs\tList available interface languages and exit."},
-        {fbi18n::kONoColor, "--no-color\tDisable colored output (also NO_COLOR=1)."},
-        {fbi18n::kOColor, "--color\tForce colored output even when not a tty."},
-        {fbi18n::kONoProgress,
-         "--no-progress\tDisable the transfer progress bar (also NO_PROGRESS=1)."},
-    };
-    for (const auto& e : extras) {
+    size_t nextras = 0;
+    const ExtraOption* extras = ExtraOptions(&nextras);
+    for (size_t ei = 0; ei < nextras; ei++) {
+        const ExtraOption& e = extras[ei];
         HelpRow row{Entry, (int)e.id, nullptr, nullptr};
         const char* t = fbi18n::T(e.id);
         if (t && t[0]) {
@@ -150,6 +142,24 @@ int ShowHelp() {
         }
     }
     return 0;
+}
+
+const ExtraOption* ExtraOptions(size_t* count) {
+    // Single source of truth for the MeowArchMobile-only options: --help
+    // renders these and the completion generator (fb_completion.cpp) reads
+    // their descriptions from the same table.
+    static const ExtraOption kExtras[] = {
+        {"--lang", "--lang=CODE\tSet interface language (see --list-langs).", fbi18n::kOLang},
+        {"--list-langs", "--list-langs\tList available interface languages and exit.",
+         fbi18n::kOListLangs},
+        {"--no-color", "--no-color\tDisable colored output (also NO_COLOR=1).", fbi18n::kONoColor},
+        {"--color", "--color\tForce colored output even when not a tty.", fbi18n::kOColor},
+        {"--no-progress",
+         "--no-progress\tDisable the transfer progress bar (also NO_PROGRESS=1).",
+         fbi18n::kONoProgress},
+    };
+    *count = sizeof(kExtras) / sizeof(kExtras[0]);
+    return kExtras;
 }
 
 }  // namespace fbhelp

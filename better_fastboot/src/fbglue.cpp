@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <string>
 
+#include "fb_completion.h"
 #include "fb_help.h"
 #include "fb_progress.h"
 #include "fb_suggest.h"
@@ -71,6 +72,7 @@ void EarlyInit(int argc, char** argv) {
     std::string lang_override;
     bool color_forced_on = false, color_forced_off = false, progress_off = false;
     bool list_langs = false;
+    std::string completion_shell;
     for (int i = 1; i < argc; i++) {
         std::string a(argv[i]);
         if (a.rfind("--lang=", 0) == 0) lang_override = a.substr(7);
@@ -79,6 +81,8 @@ void EarlyInit(int argc, char** argv) {
         else if (a == "--no-color") color_forced_off = true;
         else if (a == "--color") color_forced_on = true;
         else if (a == "--no-progress") progress_off = true;
+        else if (a.rfind("--shell-completion=", 0) == 0) completion_shell = a.substr(19);
+        else if (a == "--shell-completion" && i + 1 < argc) completion_shell = argv[++i];
     }
 
     fbi18n::Init(lang_override);
@@ -90,6 +94,21 @@ void EarlyInit(int argc, char** argv) {
 
     if (list_langs) {
         exit(ListLangs());
+    }
+
+    // Completion-script generation for packagers. Deliberately absent from
+    // --help (keeps the upstream byte-parity guarantee); documented in
+    // README.md. Machine-oriented output: exactly the script on stdout,
+    // nothing else — no colors, no localization, exit 0/1.
+    if (!completion_shell.empty()) {
+        std::string script = fbcompletion::Generate(completion_shell);
+        if (script.empty()) {
+            fprintf(stderr, "fastboot: error: unknown shell '%s' (want: bash, zsh, fish)\n",
+                    completion_shell.c_str());
+            exit(1);
+        }
+        fputs(script.c_str(), stdout);
+        exit(0);
     }
 }
 

@@ -165,7 +165,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             git clang cmake ninja make pkgconf zlib openssl gcc-libs \
-            fakeroot curl python android-tools
+            fakeroot curl python android-tools zsh fish
 
       - uses: actions/checkout@v4
 
@@ -356,6 +356,16 @@ jobs:
           strip_cr < flass_zh.txt | grep -q '您是否想输入'
           LANG=ja_JP.UTF-8 ./fastboot.exe --list-langs > langs.txt 2>&1
           strip_cr < langs.txt | grep -q '日本語'
+
+          # completion-script generation works on Windows too (same generator)
+          ./fastboot.exe --shell-completion=bash > comp.bash 2>/dev/null
+          ./fastboot.exe --shell-completion=zsh > comp.zsh 2>/dev/null
+          ./fastboot.exe --shell-completion=fish > comp.fish 2>/dev/null
+          grep -q 'complete -F _fastboot_meowarch' comp.bash
+          grep -q '#compdef fastboot-meowarch' comp.zsh
+          grep -q "complete -c fastboot-meowarch" comp.fish
+          grep -q 'zh_TW' comp.fish
+          ./fastboot.exe --shell-completion=csh > /dev/null 2>&1 && exit 1 || true
 
           # live flash over TCP against the mock device (ws2_32 path).
           python mock_device.py 5601 > mock.log 2>&1 & MPID=$!
