@@ -1,0 +1,73 @@
+diff --git a/fastboot/fastboot.h b/fastboot/fastboot.h
+index 6a49970..17d67b4 100644
+--- a/fastboot/fastboot.h
++++ b/fastboot/fastboot.h
+@@ -27,6 +27,7 @@
+  */
+ #pragma once
+ 
++#include <cstdint>
+ #include <functional>
+ #include <memory>
+ #include <string>
+diff --git a/fastboot/task.h b/fastboot/task.h
+index 7a713cf..539e13e 100644
+--- a/fastboot/task.h
++++ b/fastboot/task.h
+@@ -15,6 +15,7 @@
+ //
+ #pragma once
+ 
++#include <cstdint>
+ #include <string>
+ 
+ #include "super_flash_helper.h"
+diff --git a/fastboot/tcp.cpp b/fastboot/tcp.cpp
+index dca306f..9f527ba 100644
+--- a/fastboot/tcp.cpp
++++ b/fastboot/tcp.cpp
+@@ -28,6 +28,8 @@
+ 
+ #include "tcp.h"
+ 
++#include <cstdint>
++
+ #include <android-base/parseint.h>
+ #include <android-base/stringprintf.h>
+ 
+diff --git a/fastboot/udp.cpp b/fastboot/udp.cpp
+index 308c96c..110de88 100644
+--- a/fastboot/udp.cpp
++++ b/fastboot/udp.cpp
+@@ -31,6 +31,7 @@
+ #include "udp.h"
+ 
+ #include <errno.h>
++#include <cstdint>
+ #include <stdio.h>
+ 
+ #include <list>
+diff --git a/fastboot/udp.h b/fastboot/udp.h
+index 8d37b84..ef750d4 100644
+--- a/fastboot/udp.h
++++ b/fastboot/udp.h
+@@ -28,6 +28,7 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
+ #include <memory>
+ #include <string>
+ 
+diff --git a/fastboot/usb.h b/fastboot/usb.h
+index d85cb81..41b0737 100644
+--- a/fastboot/usb.h
++++ b/fastboot/usb.h
+@@ -28,6 +28,7 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
+ #include <functional>
+ #include <memory>
+ 

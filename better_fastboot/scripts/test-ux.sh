@@ -26,12 +26,17 @@ if [ -x "$ST" ] && "$ST"; then ok "selftest"; else bad "selftest"; fi
 
 echo "== 2. English byte-parity (piped, no color) =="
 # help: our five extra options are appended; everything else is verbatim.
-H="$(LANG=en_US.UTF-8 "$FB" --help 2>/dev/null)"
+H="$(LANG=en_US.UTF-8 NO_COLOR=1 "$FB" --help 2>/dev/null)"
 N="$(printf '%s\n' "$H" | grep -c '')"
 # upstream help is exactly 100 lines; ours adds 1 blank + 5 options = 106
 if [ "$N" = "106" ]; then ok "help line count (100 upstream + 6 ours)"; else bad "help line count = $N"; fi
-printf '%s\n' "$H" | head -100 | diff -q - <(printf '%s\n' "$H" | head -100) >/dev/null \
-  && ok "help renders" || bad "help renders"
+# byte-parity against the committed upstream baseline (tests/help-baseline-en.txt,
+# captured from the distro platform-tools fastboot --help).
+if printf '%s\n' "$H" | head -100 | diff -q - "$HERE/tests/help-baseline-en.txt" >/dev/null 2>&1; then
+  ok "help first-100 == upstream baseline (byte-identical)"
+else
+  bad "help diverges from upstream baseline"
+fi
 
 # unknown command: suggestion present, exits 1, does NOT wait for a device
 OUT="$(LANG=en_US.UTF-8 timeout 5 "$FB" flass 2>&1)"; RC=$?

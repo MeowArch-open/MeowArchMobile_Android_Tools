@@ -83,6 +83,15 @@ if(NOT EXISTS "${FASTBOOT}/Android.bp")
 endif()
 message(STATUS "AOSP tree: ${AOSP_ROOT}")
 
+# ---------------------------------------------------- windows cross build
+# cmake/win32.cmake reproduces soong's official Windows host fastboot build
+# (mingw-w64 i686 + usb_windows.cpp + Google's prebuilt AdbWinApi). Sets
+# WIN32_BUILD and the platform flags; every target below branches on it.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    include(cmake/win32.cmake)
+    set(FASTBOOT_BUILD_FS_TOOLS OFF CACHE BOOL "" FORCE)   # not_windows in Android.bp
+endif()
+
 # --------------------------------------------------------------- patches
 # Source patches for the AOSP tree live in patches/ and are applied to the
 # tree in place. Idempotent: rc=1 means "reversed or previously applied"
@@ -97,10 +106,14 @@ message(STATUS "AOSP tree: ${AOSP_ROOT}")
 #         typo suggestions (fb_suggest). Touches fastboot.cpp,
 #         fastboot_driver.{h,cpp} and util.cpp only; all behavior lives in
 #         src/ (compiled as fastboot_glue below), the patch just wires hooks.
+#   0004  usb.h/task.h/udp.h/fastboot.h/tcp.cpp/udp.cpp: include <cstdint>
+#         explicitly (same latent-bug class as 0001; clang/libstdc++ leak it,
+#         mingw-w64 does not — Windows build needs it, Linux unaffected).
 foreach(_patch
         0001-fastboot_driver_interface.h-include-cstdint.patch
         0002-super_flash_helper.cpp-include-climits.patch
-        0003-fastboot-ux-color-progress-i18n-suggest.patch)
+        0003-fastboot-ux-color-progress-i18n-suggest.patch
+        0004-fastboot-headers-include-cstdint-explicitly.patch)
     # -r /dev/null: when patch -N skips an already-applied hunk it would
     # otherwise litter the tree with .rej files on every re-configure.
     execute_process(
@@ -135,13 +148,47 @@ target_include_directories(fb_shim PUBLIC
 
 # ---------------------------------------------------------- system deps
 find_package(Threads REQUIRED)
-find_package(PkgConfig QUIET)
-find_package(OpenSSL REQUIRED)          # libcrypto: SHA256 for liblp metadata
-if(PkgConfig_FOUND)
-    pkg_check_modules(ZLIB IMPORTED_TARGET zlib)
-endif()
-if(NOT ZLIB_FOUND)
-    message(FATAL_ERROR "system zlib not found via pkg-config")
+if(WIN32_BUILD)
+    # No system zlib/OpenSSL for mingw: zlib is compiled from external/zlib
+    # below (zlib_win_static), and liblp's <openssl/sha.h> is satisfied by
+    # shim/win_compat/openssl/sha.h (3-function shim over libavb's SHA256,
+    # already a fastboot dependency — same digests, no extra library).
+    add_library(zlib_win_static STATIC
+        ${AOSP_ROOT}/external/zlib/adler32.c
+        ${AOSP_ROOT}/external/zlib/compress.c
+        ${AOSP_ROOT}/external/zlib/crc32.c
+        ${AOSP_ROOT}/external/zlib/deflate.c
+        ${AOSP_ROOT}/external/zlib/gzclose.c
+        ${AOSP_ROOT}/external/zlib/gzlib.c
+        ${AOSP_ROOT}/external/zlib/gzread.c
+        ${AOSP_ROOT}/external/zlib/gzwrite.c
+        ${AOSP_ROOT}/external/zlib/infback.c
+        ${AOSP_ROOT}/external/zlib/inffast.c
+        ${AOSP_ROOT}/external/zlib/inflate.c
+        ${AOSP_ROOT}/external/zlib/inftrees.c
+        ${AOSP_ROOT}/external/zlib/trees.c
+        ${AOSP_ROOT}/external/zlib/uncompr.c
+        ${AOSP_ROOT}/external/zlib/zutil.c
+        # adler32_simd.c / crc32_simd.c / crc_folding.c excluded: they need
+        # per-variant SIMD flags soong sets via arch-specific srcs blocks; the
+        # scalar paths above are the portable fallback (soong builds the same
+        # scalar set for non-x86 host variants).
+    )
+    target_include_directories(zlib_win_static PUBLIC ${AOSP_ROOT}/external/zlib)
+    # soong's libz_defaults cflags that matter for correctness:
+    target_compile_definitions(zlib_win_static PRIVATE
+        HAVE_HIDDEN ZLIB_CONST _LARGEFILE64_SOURCE)
+    set(ZLIB_TARGET zlib_win_static)
+else()
+    find_package(PkgConfig QUIET)
+    find_package(OpenSSL REQUIRED)      # libcrypto: SHA256 for liblp metadata
+    if(PkgConfig_FOUND)
+        pkg_check_modules(ZLIB IMPORTED_TARGET zlib)
+    endif()
+    if(NOT ZLIB_FOUND)
+        message(FATAL_ERROR "system zlib not found via pkg-config")
+    endif()
+    set(ZLIB_TARGET PkgConfig::ZLIB)
 endif()
 
 # --------------------------------------------------------------- liblog
@@ -154,7 +201,8 @@ add_library(log_static STATIC
     ${LIBLOG}/logger_write.cpp
     ${LIBLOG}/logprint.cpp
     ${LIBLOG}/properties.cpp
-    ${LIBLOG}/event_tag_map.cpp
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${LIBLOG}/event_tag_map.cpp>
+    # soong: event_tag_map.cpp is not_windows (needs sys/mman.h).
 )
 target_include_directories(log_static PUBLIC
     ${LIBLOG}/include
@@ -191,10 +239,12 @@ target_include_directories(fmt_static PUBLIC ${FMTLIB}/include)
 target_compile_options(fmt_static PRIVATE -fno-exceptions -UNDEBUG)
 
 # -------------------------------------------------------------- libbase
+# Soong's windows block swaps errors_unix.cpp for errors_windows.cpp + utf8.cpp
+# and excludes cmsg.cpp (needs <sys/socket.h>).
 add_library(base_static STATIC
     ${LIBBASE}/abi_compatibility.cpp
     ${LIBBASE}/chrono_utils.cpp
-    ${LIBBASE}/cmsg.cpp
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${LIBBASE}/cmsg.cpp>
     ${LIBBASE}/file.cpp
     ${LIBBASE}/hex.cpp
     ${LIBBASE}/logging.cpp
@@ -208,7 +258,8 @@ add_library(base_static STATIC
     ${LIBBASE}/stringprintf.cpp
     ${LIBBASE}/strings.cpp
     ${LIBBASE}/threads.cpp
-    ${LIBBASE}/errors_unix.cpp
+    $<IF:$<BOOL:${WIN32_BUILD}>,${LIBBASE}/errors_windows.cpp,${LIBBASE}/errors_unix.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${LIBBASE}/utf8.cpp>
 )
 target_include_directories(base_static PUBLIC
     ${LIBBASE}/include
@@ -218,13 +269,18 @@ target_link_libraries(base_static PUBLIC log_static fmt_static Threads::Threads)
 
 # -------------------------------------------------------- libcutils sockets
 # fastboot's socket.cpp uses cutils_socket_t + socket_send_buffers et al.
+# Soong's windows block substitutes the *_windows TUs for the unix ones
+# (sockets.cpp itself is platform-neutral: getsockname/socket_close).
 add_library(cutils_sockets STATIC
     ${SYSCORE}/libcutils/sockets.cpp
-    ${SYSCORE}/libcutils/socket_inaddr_any_server_unix.cpp
-    ${SYSCORE}/libcutils/socket_local_client_unix.cpp
-    ${SYSCORE}/libcutils/socket_local_server_unix.cpp
-    ${SYSCORE}/libcutils/socket_network_client_unix.cpp
-    ${SYSCORE}/libcutils/sockets_unix.cpp
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${SYSCORE}/libcutils/socket_inaddr_any_server_unix.cpp>
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${SYSCORE}/libcutils/socket_local_client_unix.cpp>
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${SYSCORE}/libcutils/socket_local_server_unix.cpp>
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${SYSCORE}/libcutils/socket_network_client_unix.cpp>
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${SYSCORE}/libcutils/sockets_unix.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${SYSCORE}/libcutils/sockets_windows.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${SYSCORE}/libcutils/socket_inaddr_any_server_windows.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${SYSCORE}/libcutils/socket_network_client_windows.cpp>
 )
 target_include_directories(cutils_sockets PUBLIC
     ${SYSCORE}/libcutils/include
@@ -232,6 +288,9 @@ target_include_directories(cutils_sockets PUBLIC
 )
 target_link_libraries(cutils_sockets PUBLIC log_static)
 target_compile_definitions(cutils_sockets PRIVATE _GNU_SOURCE)
+if(WIN32_BUILD)
+    target_link_libraries(cutils_sockets PUBLIC ws2_32)
+endif()
 
 # --------------------------------------------------------- diagnose_usb
 add_library(diagnose_usb STATIC
@@ -253,7 +312,7 @@ target_include_directories(sparse_static PUBLIC
     ${LIBSPARSE}/include          # <sparse/sparse.h>
     ${LIBSPARSE}                  # internal backed_block.h etc.
 )
-target_link_libraries(sparse_static PUBLIC base_static PkgConfig::ZLIB)
+target_link_libraries(sparse_static PUBLIC base_static ${ZLIB_TARGET})
 target_compile_definitions(sparse_static PRIVATE _FILE_OFFSET_BITS=64)
 
 # ---------------------------------------------------------- libziparchive
@@ -272,7 +331,7 @@ target_include_directories(ziparchive_static PUBLIC
     ${LIBZIP}/incfs_support/include         # incfs_support/*.h
     ${GTEST}/googletest/include             # <gtest/gtest_prod.h>
 )
-target_link_libraries(ziparchive_static PUBLIC base_static log_static PkgConfig::ZLIB)
+target_link_libraries(ziparchive_static PUBLIC base_static log_static ${ZLIB_TARGET})
 target_compile_definitions(ziparchive_static PUBLIC
     INCFS_SUPPORT_DISABLED=1
     ZLIB_CONST
@@ -280,15 +339,20 @@ target_compile_definitions(ziparchive_static PUBLIC
 )
 
 # ---------------------------------------------------------- libext4_utils
-add_library(ext4_utils_static STATIC
-    ${EXT4UTIL}/ext4_utils.cpp
-    ${EXT4UTIL}/wipe.cpp
-    ${EXT4UTIL}/ext4_sb.cpp
-)
-target_include_directories(ext4_utils_static PUBLIC ${EXT4UTIL}/include)
-target_link_libraries(ext4_utils_static PUBLIC base_static PkgConfig::ZLIB)
-target_compile_definitions(ext4_utils_static PRIVATE _FILE_OFFSET_BITS=64)
-target_compile_options(ext4_utils_static PRIVATE -fno-strict-aliasing)
+# soong links libext4_utils only on not_windows; liblp includes its header but
+# never calls a symbol from it on Windows (verified: nm -u shows no ext4/wipe
+# refs), so on Windows we skip the library and just keep the include dir.
+if(NOT WIN32_BUILD)
+    add_library(ext4_utils_static STATIC
+        ${EXT4UTIL}/ext4_utils.cpp
+        ${EXT4UTIL}/wipe.cpp
+        ${EXT4UTIL}/ext4_sb.cpp
+    )
+    target_include_directories(ext4_utils_static PUBLIC ${EXT4UTIL}/include)
+    target_link_libraries(ext4_utils_static PUBLIC base_static ${ZLIB_TARGET})
+    target_compile_definitions(ext4_utils_static PRIVATE _FILE_OFFSET_BITS=64)
+    target_compile_options(ext4_utils_static PRIVATE -fno-strict-aliasing)
+endif()
 
 # ----------------------------------------------------------------- liblp
 add_library(lp_static STATIC
@@ -305,11 +369,23 @@ target_include_directories(lp_static PUBLIC
     ${LIBLP}/include            # <liblp/liblp.h>
     ${LIBLP}                    # internal reader.h/writer.h/utility.h/images.h
     ${LITERAL}                  # <storage_literals/storage_literals.h>
+    ${EXT4UTIL}/include         # <ext4_utils/ext4_utils.h> (utility.cpp)
 )
-target_link_libraries(lp_static PUBLIC
-    base_static log_static sparse_static ext4_utils_static
-    OpenSSL::Crypto
-)
+if(WIN32_BUILD)
+    # SHA256 comes from shim/win_compat/openssl/sha.h over libavb (compiled
+    # into the fastboot_static link below); no OpenSSL, no ext4_utils library.
+    target_include_directories(lp_static PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/shim/win_compat"   # <openssl/sha.h> shim
+        ${AVB}                                          # <libavb/avb_sha.h>
+        ${AVB}/libavb
+        ${AVB}/libavb/sha
+    )
+    target_compile_definitions(lp_static PUBLIC AVB_COMPILATION)
+    target_link_libraries(lp_static PUBLIC base_static log_static sparse_static)
+else()
+    target_link_libraries(lp_static PUBLIC
+        base_static log_static sparse_static ext4_utils_static OpenSSL::Crypto)
+endif()
 target_compile_definitions(lp_static PRIVATE _FILE_OFFSET_BITS=64)
 
 # ------------------------------------------------------ fastboot glue (UX)
@@ -364,32 +440,68 @@ add_library(fastboot_static STATIC
     ${FASTBOOT}/util.cpp
     ${FASTBOOT}/vendor_boot_img_utils.cpp
     ${FASTBOOT}/task.cpp
-    ${FASTBOOT}/usb_linux.cpp     # official Linux USB backend (usbdevicefs)
+    $<IF:$<BOOL:${WIN32_BUILD}>,${FASTBOOT}/usb_windows.cpp,${FASTBOOT}/usb_linux.cpp>
+    # soong: windows -> usb_windows.cpp (AdbWinApi), linux -> usb_linux.cpp
+    # (usbdevicefs). Both are the genuine upstream backends.
 )
 target_include_directories(fastboot_static PUBLIC ${FB_INCS})
+if(WIN32_BUILD)
+    # adb_api.h: sparse development checkout (fetched by scripts/fetch-aosp.sh),
+    # with the vendored copy in win-prebuilt/usb as fallback.
+    if(EXISTS "${AOSP_ROOT}/development/host/windows/usb/api/adb_api.h")
+        target_include_directories(fastboot_static PUBLIC
+            "${AOSP_ROOT}/development/host/windows/usb/api")
+    else()
+        target_include_directories(fastboot_static PUBLIC "${WINPREBUILT}")
+    endif()
+    # libavb's SHA256 impl backs the <openssl/sha.h> shim (sha256_impl.c +
+    # avb_sysdeps_posix.c for avb_memcpy/avb_memset are dependency-free C;
+    # the same files soong builds into libavb).
+    add_library(avb_sha_win STATIC
+        ${AVB}/libavb/sha/sha256_impl.c
+        ${AVB}/libavb/avb_sysdeps_posix.c
+    )
+    target_include_directories(avb_sha_win PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/shim/win_compat"   # <openssl/sha.h> shim
+        ${AVB} ${AVB}/libavb ${AVB}/libavb/sha)
+    target_compile_definitions(avb_sha_win PRIVATE AVB_COMPILATION)
+endif()
 target_compile_definitions(fastboot_static PUBLIC
     ANDROID_BASE_UNIQUE_FD_DISABLE_IMPLICIT_CONVERSION
     _FILE_OFFSET_BITS=64
-    _GNU_SOURCE
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:_GNU_SOURCE>
 )
 target_link_libraries(fastboot_static PUBLIC
     fastboot_glue
     lp_static
     ziparchive_static
     sparse_static
-    ext4_utils_static
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:ext4_utils_static>
+    $<$<BOOL:${WIN32_BUILD}>:avb_sha_win>
     diagnose_usb
     cutils_sockets
     base_static
     log_static
     fb_shim
-    PkgConfig::ZLIB
-    OpenSSL::Crypto
+    ${ZLIB_TARGET}
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:OpenSSL::Crypto>
     Threads::Threads
 )
 
 add_executable(fastboot ${FASTBOOT}/main.cpp)
 target_link_libraries(fastboot PRIVATE fastboot_static)
+if(WIN32_BUILD)
+    # Google's prebuilt AdbWinApi (development/host/windows/prebuilt/usb,
+    # vendored): fastboot.exe links the import lib and loads the DLL at run
+    # time, exactly like the official platform-tools Windows dist. The DLLs
+    # are copied next to the binary for smoke tests / packaging.
+    target_link_libraries(fastboot PRIVATE "${WINPREBUILT}/AdbWinApi.a" ws2_32)
+    add_custom_command(TARGET fastboot POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${WINPREBUILT}/AdbWinApi.dll" "${WINPREBUILT}/AdbWinUsbApi.dll"
+                "$<TARGET_FILE_DIR:fastboot>"
+        COMMENT "Copying AdbWinApi.dll / AdbWinUsbApi.dll next to fastboot.exe")
+endif()
 target_compile_options(fastboot_static PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 
 install(TARGETS fastboot RUNTIME DESTINATION bin)

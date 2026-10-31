@@ -22,6 +22,9 @@
 #   system/extras             ext4_utils (liblp block-device sizing) + mke2fs.conf
 #   external/e2fsprogs        Android fork: mke2fs with -E android_sparse
 #   external/f2fs-tools       Android fork: make_f2fs / make_f2fs_casefold
+#   development               SPARSE (host/windows/usb + prebuilt/usb):
+#                             adb_api.h and Google's prebuilt AdbWinApi —
+#                             Windows (mingw i686) build only, see cmake/win32
 #
 # NOT fetched here (adbd-standalone needs them, fastboot does not): protobuf,
 # boringssl, packages/modules/adb. fastboot's libcrypto need (liblp SHA256)
@@ -68,6 +71,25 @@ fetch system/tools/mkbootimg https://android.googlesource.com/platform/system/to
 fetch system/extras         https://android.googlesource.com/platform/system/extras         fc2494a2abd7ab21774d03deb09c1362bbb0bba8
 fetch external/e2fsprogs    https://android.googlesource.com/platform/external/e2fsprogs    ef148046cf58dc1009da35ed9edb7a7425e19f39
 fetch external/f2fs-tools   https://android.googlesource.com/platform/external/f2fs-tools   d34dcc887617535a0001ea389a2bb8058f41ea05
+
+# development repo — SPARSE: only host/windows/usb (adb_api.h for
+# usb_windows.cpp) and host/windows/prebuilt/usb (Google's prebuilt
+# AdbWinApi.dll/.a + AdbWinUsbApi.dll, exactly what soong links into the
+# official Windows fastboot.exe — AdbWinApi_defaults ships compile_multilib
+# "32", so the Windows target here is i686-w64-mingw32, same as Google).
+DEVELOPMENT_SHA=88f7870b2c652922dc2afb01c076737e8bc50130
+if [ -d "$AOSP/development/.git" ]; then
+    echo "==> development: exists"
+else
+    echo "==> development (sparse: host/windows/usb + prebuilt) @ ${DEVELOPMENT_SHA:0:12}"
+    git init -q "$AOSP/development"
+    git -C "$AOSP/development" remote add origin \
+        https://android.googlesource.com/platform/development
+    git -C "$AOSP/development" sparse-checkout init --cone
+    git -C "$AOSP/development" sparse-checkout set host/windows/usb host/windows/prebuilt/usb
+    git -C "$AOSP/development" fetch -q --depth 1 origin "$DEVELOPMENT_SHA"
+    git -C "$AOSP/development" checkout -q FETCH_HEAD
+fi
 
 echo "==> done: $AOSP"
 echo "    build with: cmake -B build-native && cmake --build build-native"

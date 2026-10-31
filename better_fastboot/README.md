@@ -94,7 +94,20 @@ dist — the package installs them side by side (see PKGBUILD for the
     scripts/test-ux.sh    UX smoke suite: selftest + byte-parity + Did-you-want
                           + NO_COLOR/NO_PROGRESS + live bar against tests/
                           mock_device.py (mock TCP fastboot device, pty capture)
+    scripts/test-ux-wine.sh
+                          the same checks against fastboot.exe under wine
     tests/mock_device.py  the mock device (FB01 framing, throttled ingest)
+    tests/help-baseline-en.txt
+                          upstream `fastboot --help` (first 100 lines), captured
+                          from the distro platform-tools build — the byte-parity
+                          reference for both the Linux and Windows suites
+    cmake/mingw-i686.cmake  Windows cross toolchain (mingw-w64 i686, as soong)
+    cmake/win32.cmake     Windows-specific source/flags selection
+    shim/win_compat/openssl/sha.h
+                          SHA256 shim over libavb for the Windows liblp build
+    win-prebuilt/usb/     Google's prebuilt AdbWinApi.dll/.a + AdbWinUsbApi.dll
+                          and adb_api.h (Apache-2.0; the exact files soong
+                          links into the official Windows fastboot.exe)
     PKGBUILD              Arch package `fastboot-meowarch` (x86_64)
 
 ## Upstream
@@ -138,6 +151,33 @@ snapshot; override with `-DPLATFORM_TOOLS_VERSION=...`).
     ./build-native/fastboot_selftest                                 # unit checks (no device)
     bash scripts/test-ux.sh                                          # full UX smoke suite
     makepkg -f                                                       # package (x86_64)
+
+### Windows (cross-compiled; CI-built, like Google's)
+
+Google builds the official Windows `fastboot.exe` with **mingw-w64 GCC, i686**
+(soong `x86_windows_host.go`: `-DUSE_MINGW`; `AdbWinApi` pins
+`compile_multilib "32"`), not MSVC — the sources are POSIX-flavored
+(`getopt_long`, `flock`, `unistd.h`). We reproduce that exactly:
+
+    cmake -B build-win32 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake
+    cmake --build build-win32
+    # → build-win32/fastboot.exe (static libstdc++/libgcc, PE32 i386)
+    #   + AdbWinApi.dll / AdbWinUsbApi.dll copied next to it (ship all three,
+    #     same layout as Google's platform-tools zip)
+
+Same genuine upstream sources and same UX features (colors, progress bar,
+Did-you-want, all four languages). Windows-specific substitutions, all
+mirroring soong's `windows:` blocks: `usb_windows.cpp` + Google's prebuilt
+AdbWinApi (vendored in `win-prebuilt/usb/`, also fetched sparsely by
+`fetch-aosp.sh` from `development/host/windows`), `errors_windows.cpp`/
+`utf8.cpp` instead of `errors_unix.cpp`, `sockets_windows.cpp` et al. instead
+of the unix socket TUs, no `cmsg.cpp`/`event_tag_map.cpp`, zlib compiled from
+`external/zlib`, and liblp's `<openssl/sha.h>` satisfied by a 3-function shim
+over libavb's SHA256 (`shim/win_compat/`) — same digests, no OpenSSL needed.
+mke2fs/make_f2fs are `not_windows` upstream and not built.
+
+Smoke-test the .exe on Linux via wine (`bash scripts/test-ux-wine.sh`); CI
+runs it natively on a `windows-latest` runner.
 
 GCC works too (drop the `-DCMAKE_*_COMPILER` flags). Knobs:
 `-DFASTBOOT_BUILD_FS_TOOLS=OFF` skips mke2fs/make_f2fs;

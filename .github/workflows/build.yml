@@ -242,3 +242,104 @@ jobs:
           name: fastboot-meowarch-x86_64-pkg
           path: better_fastboot/fastboot-meowarch-*.pkg.tar.zst
           if-no-files-found: error
+
+  build-fastboot-windows:
+    # Windows fastboot.exe, built exactly the way Google builds it: soong's
+    # Windows host toolchain is mingw-w64 GCC i686 (cc/config/x86_windows_host.go
+    # sets -DUSE_MINGW; development/host/windows pins AdbWinApi to
+    # compile_multilib "32"), linked against Google's prebuilt AdbWinApi.dll
+    # with the genuine usb_windows.cpp backend. MSVC is not an option — the
+    # upstream sources are POSIX-flavored (getopt_long, flock, unistd.h) and
+    # Google compiles them with mingw, not cl.exe.
+    #
+    # Compilation is cross-done from Linux in CI (never on the dev machine);
+    # the .exe is then smoke-tested NATIVELY on a windows-latest runner (no
+    # wine — a real Windows host runs the PE directly).
+    name: fastboot.exe win32 (mingw cross)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    timeout-minutes: 60
+    steps:
+      - name: Install build deps
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git cmake ninja make pkgconf fakeroot curl python \
+            mingw-w64-gcc mingw-w64-crt mingw-w64-headers mingw-w64-winpthreads
+
+      - uses: actions/checkout@v4
+
+      - name: Fetch AOSP sources (pinned; adds sparse development checkout)
+        working-directory: better_fastboot
+        run: ./scripts/fetch-aosp.sh
+
+      - name: Configure & build (mingw-w64 i686 cross)
+        working-directory: better_fastboot
+        run: |
+          cmake -B build-win32 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake
+          cmake --build build-win32 -j"$(nproc)"
+          file build-win32/fastboot.exe | grep -q 'PE32.*Intel 80386'
+          # self-contained: static libstdc++/libgcc/winpthread; the only DLL
+          # imports are Windows system DLLs + Google's AdbWinApi.dll.
+          i686-w64-mingw32-objdump -p build-win32/fastboot.exe \
+            | grep 'DLL Name' | tee /tmp/dlls.txt
+          grep -q 'AdbWinApi.dll' /tmp/dlls.txt
+          if grep -qiE 'libstdc|libgcc|libwinpthread' /tmp/dlls.txt; then
+            echo "static runtimes leaked into imports"; exit 1
+          fi
+
+      - name: Stage dist (exe + Google's DLLs, platform-tools layout)
+        working-directory: better_fastboot
+        run: |
+          mkdir -p dist-win32
+          cp build-win32/fastboot.exe build-win32/fastboot_selftest.exe \
+             build-win32/AdbWinApi.dll build-win32/AdbWinUsbApi.dll dist-win32/
+          cp tests/mock_device.py tests/help-baseline-en.txt dist-win32/
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastboot-meowarch-win32
+          path: better_fastboot/dist-win32/*
+          if-no-files-found: error
+
+  test-fastboot-windows:
+    # Runs the cross-compiled fastboot.exe NATIVELY (no wine) and replays the
+    # platform-independent UX suite: selftest, --version, help byte-parity vs
+    # the committed upstream baseline, Did-you-want in en/zh_CN/ja, and a live
+    # flash through the mock TCP device (exercises the ws2_32 socket path).
+    name: fastboot.exe smoke (windows native)
+    needs: build-fastboot-windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastboot-meowarch-win32
+          path: dist
+
+      - name: Smoke test
+        shell: bash
+        working-directory: dist
+        run: |
+          set -e
+          # unit checks (suggestion ranking, i18n format-specifier parity,
+          # help-row integrity) run natively on Windows.
+          ./fastboot_selftest.exe | grep -q 'all checks passed'
+          ./fastboot.exe --version | tee /tmp/v.txt | grep -q 'fastboot version'
+          # help: first 100 lines byte-identical to upstream (CRLF-normalized).
+          ./fastboot.exe --help 2>/dev/null | tr -d '\r' | head -100 \
+            | diff - help-baseline-en.txt
+          # Did-you-want across languages.
+          ./fastboot.exe flass 2>&1 | tr -d '\r' | grep -q "Did you want 'flash'"
+          LANG=zh_CN.UTF-8 ./fastboot.exe flass 2>&1 | tr -d '\r' | grep -q '您是否想输入'
+          LANG=ja_JP.UTF-8 ./fastboot.exe --list-langs 2>&1 | tr -d '\r' | grep -q '日本語'
+          # live flash over TCP against the mock device (ws2_32 path).
+          python mock_device.py 5601 & MPID=$!
+          sleep 1
+          python -c "import os;open('boot.img','wb').write(os.urandom(8000000))"
+          ./fastboot.exe -s tcp:127.0.0.1:5601 flash boot boot.img 2>&1 \
+            | tr -d '\r' | tee /tmp/flash.txt | grep -q 'OKAY'
+          grep -q 'Finished' /tmp/flash.txt
+          kill $MPID 2>/dev/null || true

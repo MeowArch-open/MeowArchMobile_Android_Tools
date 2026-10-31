@@ -5,7 +5,10 @@ adbd-standalone/pkg/
 adbd-standalone/src/
 better_fastboot/build-*/
 better_fastboot/pkg/
+better_fastboot/dist-win32/
 # NOTE: better_fastboot/src/ is real source (the UX glue library) — tracked.
+# better_fastboot/win-prebuilt/ IS tracked: Google's prebuilt AdbWinApi.dll/.a
+# + adb_api.h, vendored so the Windows build works from a plain checkout.
 *.pkg.tar.zst
 *.pkg.tar.xz
 
