@@ -212,9 +212,19 @@ jobs:
           # integrity incl. format-specifier parity across languages, help-row
           # well-formedness.
           ./build-native/fastboot_selftest
+          # ASAN build: catches varargs/format UB in the glue that the plain
+          # build may not crash on (a %s-without-arg in the progress Draw()
+          # shipped once as a layout-dependent SIGSEGV).
+          cmake -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+                -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+                -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+                -DCMAKE_C_FLAGS="-fsanitize=address,undefined" \
+                -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-asan -j"$(nproc)"
           # end-to-end: byte-parity of piped English output, Did-you-want on
-          # `flass`, NO_COLOR/NO_PROGRESS opt-outs, and a live progress bar +
-          # speed readout against a mock TCP fastboot device (pty capture).
+          # `flass`, NO_COLOR/NO_PROGRESS opt-outs, a live progress bar +
+          # speed readout, and the ASAN boot regression against a mock TCP
+          # fastboot device (pty capture).
           bash scripts/test-ux.sh
 
       - name: Package (makepkg)

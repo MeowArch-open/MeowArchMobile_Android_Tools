@@ -331,7 +331,15 @@ add_library(fastboot_glue STATIC
 )
 target_include_directories(fastboot_glue PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(fastboot_glue PUBLIC base_static)
-target_compile_options(fastboot_glue PRIVATE -Wall -Wextra)
+target_compile_options(fastboot_glue PRIVATE -Wall -Wextra -Wformat=2)
+# Format-string safety: fb_progress/fb_i18n build format strings by hand and
+# hand them to fprintf/StringPrintf; a %s/arg count mismatch reads a garbage
+# va_arg and SIGSEGVs (this shipped once — caught by the ASAN job). Real format
+# errors are fatal; -Wformat-nonliteral is expected noise because passing
+# translated table strings as formats is the design (the selftest asserts
+# specifier parity across languages).
+target_compile_options(fastboot_glue PRIVATE
+    $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:GNU>>:-Werror=format -Wno-format-nonliteral>)
 
 # ------------------------------------------------------------- fastboot
 # Common include dirs for the fastboot translation units.

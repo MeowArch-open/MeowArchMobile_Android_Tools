@@ -136,8 +136,11 @@ void Draw(uint64_t current, uint64_t total) {
     }
 
     // Color the bar by completion: dim while moving, green near done.
+    // NOTE: keep the %s count exactly in sync with the argument list — an
+    // extra %s reads a garbage va_arg pointer and SIGSEGVs on unlucky stack
+    // layouts (caught by ASAN; shipped once, see fb_progress regression test).
     fbcolor::C barcol = frac >= 1.0 ? fbcolor::C::Green : fbcolor::C::Cyan;
-    fprintf(stderr, " %s%s%s %s%s%s%s  %s/%s%s%s",
+    fprintf(stderr, " %s%s%s %s%s%s%s  %s/%s%s",
             fbcolor::Code(barcol), bar, fbcolor::Code(fbcolor::C::Reset),
             fbcolor::Code(fbcolor::C::Bold), pct, fbcolor::Code(fbcolor::C::Reset),
             fbcolor::Code(fbcolor::C::Dim),

@@ -105,6 +105,30 @@ else
   BAR="$(tr '\r' '\n' < "$PTY2" | grep -c '\[#\|\[>')"
   if [ "$BAR" -eq 0 ]; then ok "NO_PROGRESS suppresses bar"; else bad "NO_PROGRESS left $BAR bar frames"; fi
   rm -f "$IMG" "$IMG2" "$PTY2"
+
+  # Regression: the progress bar's Draw() once had one %s more than args,
+  # reading a garbage va_arg pointer — layout-dependent SIGSEGV that shipped
+  # in 36.0.0-1 (`fastboot boot <2112KB img>` on a real device). If an ASAN
+  # build is present, run the boot path under it (detects use-after-return /
+  # bad varargs reads even when the plain build happens not to crash).
+  if [ -x "$HERE/build-asan/fastboot" ]; then
+    IMG3="$(mktemp /tmp/fbimg3.XXXXXX)"
+    { head -c 2162680 /dev/urandom; printf 'ANDROID!'; } > "$IMG3"
+    python3 "$MOCK" "$PORT" 2>/dev/null & MPID=$!
+    sleep 0.5
+    ASAN_BOOT="$(mktemp)"
+    ASAN_OPTIONS=detect_leaks=0 script -q -c \
+      "$HERE/build-asan/fastboot -s tcp:127.0.0.1:$PORT boot $IMG3" "$ASAN_BOOT" >/dev/null 2>&1
+    kill "$MPID" 2>/dev/null; wait "$MPID" 2>/dev/null
+    if grep -qE "AddressSanitizer|ERROR: " "$ASAN_BOOT"; then
+      bad "ASAN boot run reported errors:"; grep -E "SUMMARY" "$ASAN_BOOT" | head -2
+    else
+      ok "ASAN boot run clean (2112KB, regression for the Draw() %s bug)"
+    fi
+    rm -f "$IMG3" "$ASAN_BOOT"
+  else
+    skip "no build-asan/fastboot (cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=-fsanitize=address ...)"
+  fi
 fi
 
 echo
