@@ -276,10 +276,14 @@ jobs:
       - name: Configure & build (mingw-w64 i686 cross)
         working-directory: better_fastboot
         run: |
+          set -x   # never fail silently: every check below prints its input
           cmake -B build-win32 -G Ninja -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake
           cmake --build build-win32 -j"$(nproc)"
-          file build-win32/fastboot.exe | grep -q 'PE32.*Intel 80386'
+          # 32-bit PE. `file` spells the machine differently across versions
+          # ("Intel i386" on Arch, "Intel 80386" elsewhere) — accept both.
+          file build-win32/fastboot.exe | tee /tmp/f.txt
+          grep -qiE 'PE32.*(i386|80386|x86)' /tmp/f.txt
           # self-contained: static libstdc++/libgcc/winpthread; the only DLL
           # imports are Windows system DLLs + Google's AdbWinApi.dll.
           i686-w64-mingw32-objdump -p build-win32/fastboot.exe \
