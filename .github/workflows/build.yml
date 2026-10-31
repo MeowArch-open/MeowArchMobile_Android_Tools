@@ -327,23 +327,42 @@ jobs:
         shell: bash
         working-directory: dist
         run: |
-          set -e
+          # NOTE: never pipe a producer straight into `grep -q` here. Under
+          # `-o pipefail` (Git-bash's default on this runner) grep exits at the
+          # first match, the writer takes EPIPE, and the *pipeline* fails — the
+          # step then dies with no output at all, which is how this job failed
+          # twice. Every check below captures output to a file first.
+          set -euo pipefail
+          set -x   # name the failing check in the log
+          strip_cr() { tr -d '\r'; }
+
           # unit checks (suggestion ranking, i18n format-specifier parity,
           # help-row integrity) run natively on Windows.
-          ./fastboot_selftest.exe | grep -q 'all checks passed'
-          ./fastboot.exe --version | tee /tmp/v.txt | grep -q 'fastboot version'
+          ./fastboot_selftest.exe > selftest.txt 2>&1
+          strip_cr < selftest.txt | grep -q 'all checks passed'
+
+          ./fastboot.exe --version > version.txt 2>&1
+          strip_cr < version.txt | grep -q 'fastboot version'
+
           # help: first 100 lines byte-identical to upstream (CRLF-normalized).
-          ./fastboot.exe --help 2>/dev/null | tr -d '\r' | head -100 \
-            | diff - help-baseline-en.txt
-          # Did-you-want across languages.
-          ./fastboot.exe flass 2>&1 | tr -d '\r' | grep -q "Did you want 'flash'"
-          LANG=zh_CN.UTF-8 ./fastboot.exe flass 2>&1 | tr -d '\r' | grep -q '您是否想输入'
-          LANG=ja_JP.UTF-8 ./fastboot.exe --list-langs 2>&1 | tr -d '\r' | grep -q '日本語'
+          ./fastboot.exe --help > help.txt 2>/dev/null
+          strip_cr < help.txt | sed -n '1,100p' > help100.txt
+          diff help100.txt help-baseline-en.txt
+
+          # Did-you-want across languages (these exit 1 by design).
+          ./fastboot.exe flass > flass.txt 2>&1 || true
+          strip_cr < flass.txt | grep -q "Did you want 'flash'"
+          LANG=zh_CN.UTF-8 ./fastboot.exe flass > flass_zh.txt 2>&1 || true
+          strip_cr < flass_zh.txt | grep -q '您是否想输入'
+          LANG=ja_JP.UTF-8 ./fastboot.exe --list-langs > langs.txt 2>&1
+          strip_cr < langs.txt | grep -q '日本語'
+
           # live flash over TCP against the mock device (ws2_32 path).
-          python mock_device.py 5601 & MPID=$!
-          sleep 1
+          python mock_device.py 5601 > mock.log 2>&1 & MPID=$!
+          sleep 2
           python -c "import os;open('boot.img','wb').write(os.urandom(8000000))"
-          ./fastboot.exe -s tcp:127.0.0.1:5601 flash boot boot.img 2>&1 \
-            | tr -d '\r' | tee /tmp/flash.txt | grep -q 'OKAY'
-          grep -q 'Finished' /tmp/flash.txt
+          ./fastboot.exe -s tcp:127.0.0.1:5601 flash boot boot.img > flash.txt 2>&1
           kill $MPID 2>/dev/null || true
+          strip_cr < flash.txt
+          strip_cr < flash.txt | grep -q 'OKAY'
+          strip_cr < flash.txt | grep -q 'Finished'
