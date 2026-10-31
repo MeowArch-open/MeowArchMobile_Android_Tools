@@ -1,6 +1,6 @@
 # adbd-standalone — AOSP adbd for Arch Linux ARM (aarch64, glibc)
 
-[![build](https://github.com/MeowArch-open/MeowArchMobile_Adbd/actions/workflows/build.yml/badge.svg)](https://github.com/MeowArch-open/MeowArchMobile_Adbd/actions/workflows/build.yml)
+[![build](https://github.com/MeowArch-open/MeowArchMobile_Android_Tools/actions/workflows/build.yml/badge.svg)](https://github.com/MeowArch-open/MeowArchMobile_Android_Tools/actions/workflows/build.yml)
 
 Standalone CMake build of AOSP's adbd (`packages/modules/adb` daemon) that runs
 on standard Arch Linux ARM — no Android userland, no soong. Produces a native
