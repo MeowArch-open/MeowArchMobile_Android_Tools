@@ -174,6 +174,9 @@ else
 fi
 # bash functional drive: source the generated script and check candidate sets
 if [ -f /usr/share/bash-completion/bash_completion ] || true; then
+  # fixture dir for the flash-second-argument file checks
+  rm -rf /tmp/ct && mkdir -p /tmp/ct/sub
+  touch /tmp/ct/boot.img /tmp/ct/a.img /tmp/ct/note.txt
   cat > /tmp/fbcomp-drive.sh <<EOS
 source /tmp/fbcomp.bash
 PASS=0; FAIL=0
@@ -181,18 +184,31 @@ try() {
   local desc="\$1" want="\$2"; shift 2
   COMP_WORDS=("\$@"); COMP_CWORD=\$(( \${#COMP_WORDS[@]} - 1 ))
   COMPREPLY=()
-  _fastboot_meowarch
+  _fastboot_m
   case "\${COMPREPLY[*]}" in *"\$want"*) PASS=\$((PASS+1));; *) echo "  FAIL \$desc"; FAIL=\$((FAIL+1));; esac
 }
-try "cmds"  "flash"         fastboot-meowarch ""
-try "parts" "vendor_boot"   fastboot-meowarch "flash" ""
-try "vars"  "current-slot"  fastboot-meowarch "getvar" ""
-try "langs" "zh_TW"         fastboot-meowarch "--lang" ""
-try "slots" "other"         fastboot-meowarch "--slot" ""
+try "cmds"  "flash"         fastboot-m ""
+try "parts" "vendor_boot"   fastboot-m "flash" ""
+try "vars"  "current-slot"  fastboot-m "getvar" ""
+try "langs" "zh_TW"         fastboot-m "--lang" ""
+try "slots" "other"         fastboot-m "--slot" ""
+# flash PARTITION [FILENAME]: argument 1 is the partition, argument 2 is a file
+# (regression: the second slot used to complete command/partition names)
+cd /tmp/ct || exit 1
+try_file() {
+  local desc="\$1" want="\$2"; shift 2
+  COMP_WORDS=("\$@"); COMP_CWORD=\$(( \${#COMP_WORDS[@]} - 1 ))
+  COMPREPLY=()
+  _fastboot_m
+  case "\${COMPREPLY[*]}" in *"\$want"*) PASS=\$((PASS+1));; *) echo "  FAIL \$desc (got: \${COMPREPLY[*]})"; FAIL=\$((FAIL+1));; esac
+}
+try_file "flash2->img"  "boot.img"   fastboot-m flash boot_a ""
+try_file "flash2->./img" "./boot.img" fastboot-m flash boot_a "./"
+try_file "flash:raw2->img" "boot.img" fastboot-m flash:raw boot ""
 echo "drive: \$PASS passed, \$FAIL failed"
 [ "\$FAIL" -eq 0 ]
 EOS
-  if bash /tmp/fbcomp-drive.sh; then ok "bash functional drive (5 vocab checks)"; else bad "bash functional drive"; fi
+  if bash /tmp/fbcomp-drive.sh; then ok "bash functional drive (8 vocab checks)"; else bad "bash functional drive"; fi
 fi
 # zsh functional drive (17 vocab checks) when a zsh is available
 if command -v zsh >/dev/null 2>&1; then
@@ -206,15 +222,15 @@ else
   skip "zsh not installed (functional drive skipped; syntax-level checks above still ran)"
 fi
 # fish functional drive via `complete -C` (needs the binary on PATH as
-# fastboot-meowarch, matching the completion's -c name)
+# fastboot-m, matching the completion's -c name)
 if command -v fish >/dev/null 2>&1; then
   mkdir -p /tmp/fbcomp-fishbin /tmp/fbcomp-fishcomp
-  ln -sf "$(readlink -f "$FB")" /tmp/fbcomp-fishbin/fastboot-meowarch
-  "$FB" --shell-completion=fish > /tmp/fbcomp-fishcomp/fastboot-meowarch.fish
+  ln -sf "$(readlink -f "$FB")" /tmp/fbcomp-fishbin/fastboot-m
+  "$FB" --shell-completion=fish > /tmp/fbcomp-fishcomp/fastboot-m.fish
   FISHPASS=0; FISHFAIL=0
   fish_try() {
     # source the generated script, then ask fish for candidates
-    if fish -c "source /tmp/fbcomp-fishcomp/fastboot-meowarch.fish; complete -C 'fastboot-meowarch $2'" 2>/dev/null | grep -q -- "$3"; then
+    if fish -c "source /tmp/fbcomp-fishcomp/fastboot-m.fish; complete -C 'fastboot-m $2'" 2>/dev/null | grep -q -- "$3"; then
       ok "fish drive: $1"; FISHPASS=$((FISHPASS+1))
     else
       bad "fish drive: $1"; FISHFAIL=$((FISHFAIL+1))
@@ -227,6 +243,24 @@ if command -v fish >/dev/null 2>&1; then
   fish_try "getvar->vars"     "getvar "       "current-slot"
   fish_try "--slot->slots"    "--slot "       "other"
   fish_try "--lang->langs"    "--lang "       "zh_TW"
+  # flash PARTITION *FILENAME*: the second argument must offer files, not
+  # partitions (the bug: fish's rule ignored the argument position)
+  ( cd /tmp/ct && touch boot.img a.img && mkdir -p sub )
+  fish_neg() {
+    if fish -c "source /tmp/fbcomp-fishcomp/fastboot-m.fish; cd /tmp/ct; complete -C 'fastboot-m $2'" 2>/dev/null | grep -qx -- "$3"; then
+      bad "fish drive: $1"; FISHFAIL=$((FISHFAIL+1))
+    else
+      ok "fish drive: $1"; FISHPASS=$((FISHPASS+1))
+    fi
+  }
+  if fish -c "source /tmp/fbcomp-fishcomp/fastboot-m.fish; cd /tmp/ct; complete -C 'fastboot-m flash boot_a '" 2>/dev/null | grep -qx -- "boot.img"; then
+    ok "fish drive: flash2->img"; FISHPASS=$((FISHPASS+1))
+  else
+    bad "fish drive: flash2->img"; FISHFAIL=$((FISHFAIL+1))
+  fi
+  fish_neg "flash2 no partitions" "flash boot_a " "vendor_boot"
+  fish_neg "flash2 no notes.txt"  "flash boot_a " "note.txt"
+  if [ "$FISHFAIL" -eq 0 ]; then ok "fish drive: all $FISHPASS checks"; fi
   export PATH="${PATH#/tmp/fbcomp-fishbin:}"
 else
   skip "fish not installed (functional drive skipped)"

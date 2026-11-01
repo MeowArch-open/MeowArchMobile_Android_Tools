@@ -5,7 +5,7 @@
 # ZLE context needed) and asserts the right vocabulary comes back for each
 # word position. Usage:
 #
-#   zsh scripts/test-completions.zsh <path-to-generated-_fastboot-meowarch>
+#   zsh scripts/test-completions.zsh <path-to-generated-_fastboot-m>
 #
 # A real zsh is required (not installed by default everywhere); test-ux.sh
 # skips this when `zsh` is missing.
@@ -17,11 +17,11 @@ local script=${1:?usage: test-completions.zsh <completion-script>}
 
 local dir=${script:h}
 local fn=${script:t}
-# the file must be named _fastboot-meowarch for autoload; copy if needed
+# the file must be named _fastboot-m for autoload; copy if needed
 local tmpdir=$(mktemp -d)
-cp $script $tmpdir/_fastboot-meowarch
+cp $script $tmpdir/_fastboot-m
 fpath=($tmpdir)
-autoload -Uz _fastboot-meowarch
+autoload -Uz _fastboot-m
 
 typeset -g CAPTURED=""
 typeset -i pass=0 fail=0
@@ -52,9 +52,9 @@ _files() { CAPTURED="${CAPTURED} <files>" }
 try() {
   local desc=$1 want=$2; shift 2
   CAPTURED=""
-  words=(fastboot-meowarch "$@")
+  words=(fastboot-m "$@")
   CURRENT=${#words}
-  _fastboot-meowarch >/dev/null 2>&1
+  _fastboot-m >/dev/null 2>&1
   if [[ $CAPTURED == *"$want"* ]]; then
     print "  ok   $desc"; pass+=1
   else
@@ -79,6 +79,21 @@ try "--lang= form"             "ja"              "--lang="
 try "fetch -> partitions"      "dtbo"            "fetch" ""
 try "erase -> partitions"      "userdata"        "erase" ""
 try "format -> partitions"     "vbmeta"          "format" ""
+# flash PARTITION [FILENAME]: argument 2 is a file, argument 1 a partition
+try "flash2 -> img files"      "<files>"         "flash" "boot_a" ""
+try "flash:raw2 -> img files"  "<files>"         "flash:raw" "boot" ""
+run_flash2_negative() {
+  CAPTURED=""
+  words=(fastboot-m flash boot_a "")
+  CURRENT=${#words}
+  _fastboot_m >/dev/null 2>&1
+  if [[ $CAPTURED == *"vendor_boot"* ]]; then
+    print "  FAIL flash2 offers partitions: '$CAPTURED'"; fail+=1
+  else
+    print "  ok   flash2 does not offer partitions"; pass+=1
+  fi
+}
+run_flash2_negative
 
 print "== zsh completion: $pass passed, $fail failed =="
 rm -rf $tmpdir

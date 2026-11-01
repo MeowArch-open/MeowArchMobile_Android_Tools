@@ -6,10 +6,16 @@
  * on a pipe, so scripted output stays byte-identical to upstream:
  *
  *   enabled  = stderr is a tty
- *           && TERM is set and != "dumb"
+ *           && TERM is set and != "dumb"        (POSIX only — see below)
  *           && NO_COLOR is unset (https://no-color.org)
  *           && !fb_color_disable() was called (--no-color)
  *   FORCE_COLOR=1 overrides the tty/TERM checks (useful for CI screenshots).
+ *
+ * Windows: "tty" means GetConsoleMode succeeds, and ANSI escapes only work
+ * once ENABLE_VIRTUAL_TERMINAL_PROCESSING is set on the handle — Windows
+ * Terminal leaves it off by default. Init() turns it on. The TERM check is
+ * skipped there because cmd.exe / Windows Terminal do not set TERM at all
+ * (that check wrongly disabled colors on every native Windows terminal).
  */
 #pragma once
 
@@ -43,8 +49,16 @@ const char* Code(C c);
 // Convenience: wraps |s| in |c| (no-op string when disabled).
 std::string Paint(C c, const std::string& s);
 
-// Clears from the cursor to end of line (empty string when colors are off —
-// callers that redraw a line must not rely on it).
+// True when ANSI control sequences (SGR, "\r", \033[K) are actually
+// interpreted by the terminal on fd 2. Independent of whether colors are
+// *enabled*: NO_COLOR turns colors off but must not break the progress bar's
+// ability to erase its own line — that coupling used to leave the bar's tail
+// on screen after "OKAY [...]" (visible on Windows, where it also lacked VT
+// processing entirely).
+bool EscapesOk();
+
+// Clears from the cursor to end of line. Empty string when EscapesOk() is
+// false, i.e. when writing an escape would land in a pipe as literal text.
 const char* ClearToEol();
 
 }  // namespace fbcolor

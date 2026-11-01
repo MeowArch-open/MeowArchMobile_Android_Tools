@@ -234,13 +234,16 @@ jobs:
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
           chown -R builder:builder . ../aosp-adbd
           sudo -u builder bash -c 'makepkg -f'
-          tar --zstd -xOf fastboot-meowarch-*.pkg.tar.zst .PKGINFO | grep '^arch = x86_64$'
+          tar --zstd -xOf fastboot-m-*.pkg.tar.zst .PKGINFO | grep '^arch = x86_64$'
+          # both command names must be present in the package
+          tar --zstd -tf fastboot-m-*.pkg.tar.zst | grep -qx 'usr/bin/fastboot-m'
+          tar --zstd -tf fastboot-m-*.pkg.tar.zst | grep -qx 'usr/bin/fastboot-meowarch'
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: fastboot-meowarch-x86_64-pkg
-          path: better_fastboot/fastboot-meowarch-*.pkg.tar.zst
+          name: fastboot-m-x86_64-pkg
+          path: better_fastboot/fastboot-m-*.pkg.tar.zst
           if-no-files-found: error
 
   build-fastboot-windows:
@@ -304,7 +307,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: fastboot-meowarch-win32
+          name: fastboot-m-win32
           path: better_fastboot/dist-win32/*
           if-no-files-found: error
 
@@ -320,7 +323,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: fastboot-meowarch-win32
+          name: fastboot-m-win32
           path: dist
 
       - name: Smoke test
@@ -361,9 +364,11 @@ jobs:
           ./fastboot.exe --shell-completion=bash > comp.bash 2>/dev/null
           ./fastboot.exe --shell-completion=zsh > comp.zsh 2>/dev/null
           ./fastboot.exe --shell-completion=fish > comp.fish 2>/dev/null
-          grep -q 'complete -F _fastboot_meowarch' comp.bash
-          grep -q '#compdef fastboot-meowarch' comp.zsh
-          grep -q "complete -c fastboot-meowarch" comp.fish
+          grep -q 'complete -F _fastboot_m fastboot-m fastboot-meowarch' comp.bash
+          grep -q '#compdef fastboot-m fastboot-meowarch' comp.zsh
+          grep -q "complete -c fastboot-m" comp.fish
+          # flash's second argument must complete files, not partitions
+          grep -q '__fbma_arg_from 1 flash flash:raw' comp.fish
           grep -q 'zh_TW' comp.fish
           ./fastboot.exe --shell-completion=csh > /dev/null 2>&1 && exit 1 || true
 

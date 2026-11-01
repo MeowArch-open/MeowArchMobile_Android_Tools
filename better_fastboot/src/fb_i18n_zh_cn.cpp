@@ -141,7 +141,7 @@ static const MsgEntry kZhCnTable[] = {
     {kUnknownPartition, "未知分区 '%s'"},
     {kDidYouMean, "您是否想输入 '%s'？"},
     {kDidYouMeanList, "您是否想输入其中之一: %s？"},
-    {kRunHelp, "运行 'fastboot --help' 查看用法。"},
+    {kRunHelp, "运行 'fastboot-m --help' 查看用法。"},
     {kNoCommand, "没有命令"},
     {kExpectedArgument, "缺少参数"},
     {kEmptyOemCommand, "oem 命令为空"},

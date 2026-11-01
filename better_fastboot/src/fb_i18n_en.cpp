@@ -31,7 +31,7 @@ static const MsgEntry kEnTable[] = {
     {kUnknownPartition, "unknown partition '%s'"},
     {kDidYouMean, "Did you want '%s'?"},
     {kDidYouMeanList, "Did you want one of: %s?"},
-    {kRunHelp, "Run 'fastboot --help' for usage."},
+    {kRunHelp, "Run 'fastboot-m --help' for usage."},
     {kNoCommand, "no command"},
     {kExpectedArgument, "expected argument"},
     {kEmptyOemCommand, "empty oem command"},

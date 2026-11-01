@@ -110,7 +110,7 @@ dist — the package installs them side by side (see PKGBUILD for the
     win-prebuilt/usb/     Google's prebuilt AdbWinApi.dll/.a + AdbWinUsbApi.dll
                           and adb_api.h (Apache-2.0; the exact files soong
                           links into the official Windows fastboot.exe)
-    PKGBUILD              Arch package `fastboot-meowarch` (x86_64)
+    PKGBUILD              Arch package `fastboot-m` (x86_64)
 
 ## Upstream
 
@@ -189,43 +189,65 @@ android-tools fastboot itself links libstdc++).
 
 ## Run
 
+The commands are `fastboot-m` and its alias `fastboot-meowarch` (both symlinks
+to the same binary). `fastboot-m` is short; the alias keeps old scripts
+working. Neither collides with the distro's android-tools, which owns
+`/usr/bin/fastboot` — both packages install side by side.
+
 USB (real phones): works wherever platform-tools works —
 
-    fastboot devices                 # bootloader mode
-    fastboot flash boot boot.img
-    fastboot -w                      # formats userdata (uses bundled mke2fs/make_f2fs)
+    fastboot-m devices                 # bootloader mode
+    fastboot-m flash boot boot.img
+    fastboot-m -w                      # formats userdata (uses bundled mke2fs/make_f2fs)
 
-If `fastboot devices` is empty but `lsusb` sees the phone, it's udev
+If `fastboot-m devices` is empty but `lsusb` sees the phone, it's udev
 permissions — install Android udev rules (Arch: `android-udev` AUR) or run
 as root.
 
 TCP/UDP fastboot (emulators, network fastboot):
 
-    fastboot -s tcp:192.168.1.20:5554 devices
+    fastboot-m -s tcp:192.168.1.20:5554 devices
 
 ### MeowArchMobile additions
 
-    fastboot --list-langs              # en, zh_CN, zh_TW, ja
-    fastboot --lang=zh_CN devices      # one-shot language override
-    LANG=ja_JP.UTF-8 fastboot --help   # or via the usual locale variables
-    fastboot --no-color ...            # plain output (NO_COLOR=1 also works)
-    fastboot --color ...               # force colors even on a pipe
-    fastboot --no-progress ...         # no bar (NO_PROGRESS=1 also works)
-    fastboot --shell-completion=bash   # completion script (also zsh, fish)
+    fastboot-m --list-langs              # en, zh_CN, zh_TW, ja
+    fastboot-m --lang=zh_CN devices      # one-shot language override
+    LANG=ja_JP.UTF-8 fastboot-m --help   # or via the usual locale variables
+    fastboot-m --no-color ...            # plain output (NO_COLOR=1 also works)
+    fastboot-m --color ...               # force colors even on a pipe
+    fastboot-m --no-progress ...         # no bar (NO_PROGRESS=1 also works)
+    fastboot-m --shell-completion=bash   # completion script (also zsh, fish)
 
 Typo handling — errors out immediately (before any `< waiting for any
 device >`), with a suggestion when something is close:
 
-    $ fastboot flass boot boot.img
-    fastboot: error: unknown command flass
+    $ fastboot-m flass boot boot.img
+    fastboot-m: error: unknown command flass
     Did you want 'flash'?
-    Run 'fastboot --help' for usage.
+    Run 'fastboot-m --help' for usage.
 
-Progress bar (tty only): renders on the `Sending/Writing/Fetching/Uploading`
-lines with percent, bytes, instantaneous speed (MiB/s, sampled over a short
-ring buffer) and ETA, then cleans the line back to upstream's exact
-`OKAY [x.xxxs]` format. Bootloader INFO chatter hides the bar, prints, and
-the bar resumes.
+Progress bar (tty only): renders **one line, repainted in place** on the
+`Sending/Writing/Fetching/Uploading` lines, with percent, bytes, instantaneous
+speed (MiB/s, sampled over a short ring buffer) and ETA, then cleans the line
+back to upstream's exact `OKAY [x.xxxs]` format. Bootloader INFO chatter hides
+the bar, prints, and the bar resumes.
+
+The frame is assembled in memory, measured in *display columns* (CJK counts
+two — the translated prologs used to overflow an 80-column terminal and every
+frame then stayed on screen), and truncated to the terminal width, re-queried
+each frame so resizes are picked up. When the line is too narrow the detail is
+dropped in a fixed order — ETA, then the byte counters, then everything but
+the percentage — and finally the prolog itself is shortened with an ellipsis.
+Bar and field widths are budgeted rather than measured per frame, so the line
+does not jitter as the speed text changes length.
+
+Windows: `ENABLE_VIRTUAL_TERMINAL_PROCESSING` is switched on for the console
+handle at startup (Windows Terminal and conhost both leave it off, so `\r`
+and `\033[K` were being printed as literal text and every frame appended to
+the line until it wrapped). Windows terminals also do not export `TERM`, so the
+"TERM must be set" gate is POSIX-only; only an explicit `TERM=dumb` opts out.
+On a console that cannot do ANSI at all, the bar degrades to printing one
+complete line at the end instead of smearing frames.
 
 Byte-parity guarantees (checked in CI): with colors/progress off (any pipe)
 and `LANG=en`, `--help`/`--version`/error output match upstream exactly —
@@ -239,17 +261,26 @@ matches the build — commands and long options come from the same tables that
 power Did-you-want, descriptions from the same generated help rows, and
 `--lang` completes the compiled-in language list:
 
-    fastboot --shell-completion=bash > /usr/share/bash-completion/completions/fastboot-meowarch
-    fastboot --shell-completion=zsh  > /usr/share/zsh/site-functions/_fastboot-meowarch
-    fastboot --shell-completion=fish > /usr/share/fish/vendor_completions.d/fastboot-meowarch.fish
+    fastboot-m --shell-completion=bash > /usr/share/bash-completion/completions/fastboot-m
+    fastboot-m --shell-completion=zsh  > /usr/share/zsh/site-functions/_fastboot-m
+    fastboot-m --shell-completion=fish > /usr/share/fish/vendor_completions.d/fastboot-m.fish
+
+Each shell autoloads its completion by *command name*, so the package installs
+the same script a second time under `fastboot-meowarch` (`_fastboot-meowarch`,
+`fastboot-meowarch.fish`). The scripts themselves register for both names
+(`complete -F _fastboot_m fastboot-m fastboot-meowarch`, `#compdef fastboot-m
+fastboot-meowarch`, `complete -c fastboot-m -c fastboot-meowarch`).
 
 The Arch package runs exactly these at package() time (that is why the
 upstream 2017-era `fastboot.bash` is no longer shipped: it predates half of
 today's command set and knows nothing about our options).
 
 What completes: all commands and options before/instead of a command;
-partitions after `flash/erase/format/fetch`; `*.img` files after
-`flash PARTITION`, `boot`, `stage`, `wipe-super`; `*.zip` after `update`;
+partitions for the *first* argument of `flash`/`flash:raw`/`erase`/`format`/
+`fetch`; `*.img` files and directories for the *second and later* arguments of
+`flash`/`flash:raw` (so `fastboot-m flash boot_a <TAB>` offers `./boot.img`,
+not another partition name), any file for `fetch`'s output argument, and
+`*.img` for `boot`/`stage`/`wipe-super`; `*.zip` after `update`;
 getvar variable names after `getvar`; slots after `--slot`/`--set-active`/
 `set_active` (both `--slot a` and `--slot=a` forms); reboot targets after
 `reboot`; `flashing`/`gsi`/`snapshot-update` subcommands; languages after
@@ -259,7 +290,7 @@ getvar variable names after `getvar`; slots after `--slot`/`--set-active`/
 Deliberately hidden from `--help` (byte-parity); unknown shells exit 1 with
 an error. All three scripts are functionally tested in `scripts/test-ux.sh`
 (bash/fish drives inline; zsh via `scripts/test-completions.zsh`, skipped
-when zsh is absent).
+when zsh is absent), including the flash-second-argument file rule.
 
 ## Known quirks (all upstream behavior, not build bugs)
 

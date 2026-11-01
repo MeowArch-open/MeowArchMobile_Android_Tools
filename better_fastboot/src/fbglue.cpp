@@ -24,6 +24,10 @@ using android::base::StringPrintf;
 namespace fbglue {
 namespace {
 
+// Short name used in messages the completion generator emits. The installed
+// commands are /usr/bin/fastboot-m and its long alias fastboot-meowarch.
+constexpr const char* kProgramName = "fastboot-m";
+
 // Join suggestion list: "'a', 'b'" — quotes added per candidate.
 std::string QuoteList(const std::vector<std::string>& cands) {
     std::string out;
@@ -86,9 +90,13 @@ void EarlyInit(int argc, char** argv) {
     }
 
     fbi18n::Init(lang_override);
+    // Init() first, always: it is what discovers whether the terminal
+    // interprets ANSI at all (and turns on Windows VT processing). Skipping it
+    // when --no-color was given used to leave escapes marked unavailable, which
+    // silently downgraded the progress bar to its plain fallback.
+    fbcolor::Init();
     if (color_forced_off) fbcolor::SetEnabled(false);
     else if (color_forced_on) fbcolor::SetEnabled(true);
-    else fbcolor::Init();
     fbprogress::Init();
     if (progress_off) fbprogress::SetEnabled(false);
 
@@ -103,8 +111,8 @@ void EarlyInit(int argc, char** argv) {
     if (!completion_shell.empty()) {
         std::string script = fbcompletion::Generate(completion_shell);
         if (script.empty()) {
-            fprintf(stderr, "fastboot: error: unknown shell '%s' (want: bash, zsh, fish)\n",
-                    completion_shell.c_str());
+            fprintf(stderr, "%s: error: unknown shell '%s' (want: bash, zsh, fish)\n",
+                    kProgramName, completion_shell.c_str());
             exit(1);
         }
         fputs(script.c_str(), stdout);

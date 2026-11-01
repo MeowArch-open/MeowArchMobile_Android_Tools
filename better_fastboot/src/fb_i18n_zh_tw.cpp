@@ -138,7 +138,7 @@ static const MsgEntry kZhTwTable[] = {
     {kUnknownPartition, "未知分割區 '%s'"},
     {kDidYouMean, "您是否想輸入 '%s'？"},
     {kDidYouMeanList, "您是否想輸入其中之一: %s？"},
-    {kRunHelp, "執行 'fastboot --help' 查看用法。"},
+    {kRunHelp, "執行 'fastboot-m --help' 查看用法。"},
     {kNoCommand, "沒有命令"},
     {kExpectedArgument, "缺少引數"},
     {kEmptyOemCommand, "oem 命令為空"},
