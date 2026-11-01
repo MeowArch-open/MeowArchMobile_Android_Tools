@@ -105,6 +105,7 @@
     X(kONoColor)                                                                                   \
     X(kOColor)                                                                                     \
     X(kONoProgress)                                                                                \
+    X(kHFlashX)                                                                                    \
     /* runtime: status / epilog */                                                                 \
     X(kOkay)                                                                                       \
     X(kFailed)                                                                                     \
@@ -131,6 +132,14 @@
     X(kInvalidGsiCommand)                                                                          \
     X(kExpectedSnapshotUpdate)                                                                     \
     X(kUnsupportedFsOption)                                                                        \
+    /* runtime: flash-x (payload.bin extraction) */                                                \
+    X(kExtracting)                                                                                 \
+    X(kPayloadOpenFailed)                                                                          \
+    X(kPayloadInvalid)                                                                             \
+    X(kPayloadDelta)                                                                               \
+    X(kPayloadNoPartition)                                                                         \
+    X(kPayloadExtractFailed)                                                                       \
+    X(kJunkAfterFlashX)                                                                            \
     /* driver prologs (printf formats; arguments as upstream) */                                   \
     X(kSending)                                                                                    \
     X(kSendingSparse)                                                                              \

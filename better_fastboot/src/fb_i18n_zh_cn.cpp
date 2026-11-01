@@ -151,6 +151,15 @@ static const MsgEntry kZhCnTable[] = {
     {kInvalidGsiCommand, "无效的 gsi 命令"},
     {kExpectedSnapshotUpdate, "应为: snapshot-update [cancel|merge]"},
     {kUnsupportedFsOption, "不支持的选项: %s"},
+    // -- flash-x (payload.bin extraction)
+    {kHFlashX, "flash-x\t从 OTA payload.bin 提取分区并刷入。包内分区名\n\t默认取分区名（自动去掉槽位后缀）。"},
+    {kExtracting, "正在从 payload.bin 提取 '%s'"},
+    {kPayloadOpenFailed, "无法打开 payload '%s': %s"},
+    {kPayloadInvalid, "'%s' 不是可用的 payload.bin：%s"},
+    {kPayloadDelta, "'%s'：这是增量 OTA 的 payload，flash-x 需要完整全量 payload"},
+    {kPayloadNoPartition, "payload 中没有分区 '%s'（可用：%s）"},
+    {kPayloadExtractFailed, "从 payload 提取失败：%s"},
+    {kJunkAfterFlashX, "flash-x 最多接受三个参数：分区 payload文件 [包内分区名]"},
     // -- driver prologs ------------------------------------------------------------
     {kSending, "正在发送 '%s' (%zu KB)"},
     {kSendingSparse, "正在发送稀疏镜像 '%s' %zu/%zu (%u KB)"},

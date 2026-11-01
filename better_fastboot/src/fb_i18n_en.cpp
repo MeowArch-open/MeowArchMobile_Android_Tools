@@ -41,6 +41,15 @@ static const MsgEntry kEnTable[] = {
     {kInvalidGsiCommand, "invalid gsi command"},
     {kExpectedSnapshotUpdate, "expected: snapshot-update [cancel|merge]"},
     {kUnsupportedFsOption, "unsupported options: %s"},
+    // -- flash-x (payload.bin extraction)
+    {kHFlashX, "flash-x\tExtract PARTITION from an OTA payload.bin and flash it.\n\tNAME names the entry inside the payload; it defaults\n\tto PARTITION with any slot suffix removed."},
+    {kExtracting, "Extracting '%s' from payload.bin"},
+    {kPayloadOpenFailed, "cannot open payload '%s': %s"},
+    {kPayloadInvalid, "'%s' is not a usable payload.bin: %s"},
+    {kPayloadDelta, "'%s': payload is a delta OTA (incremental); flash-x needs a full payload"},
+    {kPayloadNoPartition, "payload has no partition '%s' (available: %s)"},
+    {kPayloadExtractFailed, "extracting from payload failed: %s"},
+    {kJunkAfterFlashX, "flash-x takes at most three arguments: PARTITION PAYLOAD [NAME]"},
     // -- driver prologs (printf formats; arguments as upstream) ----------------
     {kSending, "Sending '%s' (%zu KB)"},
     {kSendingSparse, "Sending sparse '%s' %zu/%zu (%u KB)"},

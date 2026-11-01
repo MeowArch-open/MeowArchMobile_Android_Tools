@@ -13,6 +13,7 @@
 
 #include "fb_color.h"
 #include "fb_i18n.h"
+#include "fb_payload.h"
 
 namespace fbglue {
 
@@ -46,6 +47,28 @@ void ValidateFirstCommand(const std::string& command);
 
 // "no command" usage error + one-line usage + run-help hint. Exits(1).
 [[noreturn]] void NoCommandError();
+
+// One extracted partition image from a payload.bin, plus the localized error
+// when extraction failed. The image is an RAII temp file: it unlinks itself
+// when the handle goes out of scope, i.e. after the flash that consumed it.
+struct PayloadExtraction {
+    fbpayload::Image image;
+    std::string error;  // empty on success; already localized, ready to print
+    bool ok() const { return image.valid(); }
+};
+
+// `flash-x PARTITION PAYLOAD [NAME]`: pull one partition image out of an OTA
+// payload.bin into a temp file so the caller can flash it through the normal
+// path. Prints its own "Extracting ..." prolog and progress bar, then the
+// OKAY/FAILED epilog, matching how every other command reports. NAME selects
+// the entry inside the payload; when empty, PARTITION is used with any slot
+// suffix stripped (so `flash-x boot_a payload.bin` finds "boot").
+//
+// This is the part that keeps upstream untouched: the caller hands the returned
+// path to its own FlashTask, so sparse re-splitting, logical-partition resize,
+// vbmeta rewriting and slot handling all stay upstream behavior.
+PayloadExtraction ExtractFromPayload(const std::string& target_partition,
+                                     const std::string& payload_path, const std::string& inner);
 
 // getopt_long hit '?': prints a Did-you-want hint for an unknown long option
 // (argv token before optind), then returns (caller exits 1 as upstream does).

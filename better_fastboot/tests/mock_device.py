@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
-"""TCP fastboot mock with throttled ingest (~15 MB/s) to exercise the bar."""
+"""TCP fastboot mock with throttled ingest (~15 MB/s) to exercise the bar.
+
+    mock_device.py PORT [CAPTURE_FILE]
+
+With CAPTURE_FILE, every byte of every download is appended to it, so a test
+can compare what fastboot actually transmitted against what it should have
+extracted (tests/test_flash_x.py does exactly that). Without it, bytes are
+discarded as before.
+"""
 import socket, struct, sys, time
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 5555
+CAPTURE = open(sys.argv[2], "wb") if len(sys.argv) > 2 else None
 RATE = 15 * 1024 * 1024  # bytes/sec ingest cap
 srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 srv.bind((HOST, PORT)); srv.listen(1)
@@ -37,6 +46,7 @@ try:
             got = 0; t0 = time.time()
             while got < size:
                 chunk = read_msg(); got += len(chunk)
+                if CAPTURE: CAPTURE.write(chunk); CAPTURE.flush()
                 elapsed = time.time() - t0
                 target = got / RATE
                 if target > elapsed: time.sleep(target - elapsed)
@@ -50,4 +60,5 @@ try:
 except EOFError:
     pass
 finally:
+    if CAPTURE: CAPTURE.close()
     conn.close(); srv.close()

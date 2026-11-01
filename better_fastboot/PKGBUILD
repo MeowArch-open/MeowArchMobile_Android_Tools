@@ -25,7 +25,7 @@
 
 pkgname=fastboot-meowarch
 pkgver=36.0.0
-pkgrel=3
+pkgrel=4
 pkgdesc="AOSP host fastboot tool (official usb_linux backend), built standalone — with Android mke2fs/make_f2fs for 'fastboot -w'"
 arch=('x86_64')
 url="https://android.googlesource.com/platform/system/core/"

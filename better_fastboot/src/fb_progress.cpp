@@ -51,7 +51,6 @@ int g_cols = 80;
 // Bracket colour of the last frame: when it changes, the bar is repainted
 // without relying on "clear to end of line", which keeps the final state
 // correct even on a terminal that ignores \033[K.
-bool g_last_green = false;
 
 // Rate sampling: instantaneous speed over a short ring of samples.
 struct Sample {
@@ -326,7 +325,6 @@ void Draw(uint64_t current, uint64_t total) {
         g_shown = prolog;
         g_shown_valid = true;
         g_bar_active = false;
-        g_last_green = green;
         return;
     }
 
@@ -364,7 +362,6 @@ void Draw(uint64_t current, uint64_t total) {
     g_shown = prolog;
     g_shown_valid = true;
     g_bar_active = true;
-    g_last_green = green;
 }
 
 }  // namespace

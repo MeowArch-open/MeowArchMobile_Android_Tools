@@ -43,10 +43,19 @@ void TestSuggest() {
     CHECK(!a.empty() && a[0] == "flash", "flass -> flash (got %zu cands, first=%s)", a.size(),
           a.empty() ? "" : a[0].c_str());
 
-    // Prefix affinity: "flas" offers flash and flashall, flash first.
-    auto b = Sug("flas", fbsuggest::Kind::Command);
+    // Prefix affinity: "flas" offers the whole flash family, flash first. The
+    // cap is deliberately wide so adding another flash-* command (flash-x
+    // arrived this way) does not silently push an existing candidate out of a
+    // two-slot window and fail the check for the wrong reason.
+    auto b = Sug("flas", fbsuggest::Kind::Command, 6);
     CHECK(Has(b, "flash") && Has(b, "flashall"), "flas -> {flash,flashall}");
+    CHECK(Has(b, "flash-x"), "flas -> {flash-x}");
     CHECK(!b.empty() && b[0] == "flash", "flas best is flash");
+
+    // The canonical typo still resolves to exactly one candidate: flash-x is
+    // distance 4 from "flass", past the tolerance, so it does not crowd in.
+    auto a2 = Sug("flass", fbsuggest::Kind::Command, 6);
+    CHECK(a2.size() == 1 && a2[0] == "flash", "flass -> only flash (got %zu)", a2.size());
 
     // Totally foreign word: no suggestion (must not hallucinate a match).
     auto c = Sug("xyzzy", fbsuggest::Kind::Command);
@@ -127,7 +136,7 @@ void TestI18n() {
     CHECK(strcmp(fbi18n::T(fbi18n::kUnknownCommand), "unknown command %s") != 0,
           "zh_CN kUnknownCommand is translated");
     CHECK(strstr(fbi18n::T(fbi18n::kUnknownCommand), "%s") != nullptr,
-          "zh_CN kUnknownCommand keeps %s");
+          "zh_CN kUnknownCommand keeps %%s");
 
     // Locale fallback: unknown code -> English; base-language fallback works.
     fbi18n::Init("fr_FR");

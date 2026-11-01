@@ -388,6 +388,57 @@ else()
 endif()
 target_compile_definitions(lp_static PRIVATE _FILE_OFFSET_BITS=64)
 
+# ------------------------------------------- payload.bin decoders (flash-x)
+# `flash-x` extracts a partition image out of an Android payload.bin, so it
+# needs the two compressors update_engine uses: xz (REPLACE_XZ) and bzip2
+# (REPLACE_BZ). Both come from AOSP's own external/ checkouts rather than the
+# system libraries, for two reasons: mingw has no cross liblzma/libbz2 packages
+# in Arch's repos (so Windows could not link them at all), and matching AOSP's
+# copies keeps decoding behaviour identical to update_engine.
+#
+# xz-embedded is the kernel-derived decoder AOSP ships as libxz; its userspace
+# shim (userspace/xz_config.h) supplies kmalloc/memzero and friends. The BCJ
+# filters and CRC64 are enabled exactly as external/xz-embedded/Android.bp does,
+# plus XZ_DEC_ANY_CHECK so a payload whose xz stream carries a SHA-256 check
+# (which xz-embedded cannot verify) still decodes instead of failing — the
+# manifest's own data_sha256_hash is verified separately below.
+set(XZEMBEDDED "${AOSP_ROOT}/external/xz-embedded")
+set(BZIP2      "${AOSP_ROOT}/external/bzip2")
+
+add_library(xz_dec_static STATIC
+    ${XZEMBEDDED}/linux/lib/xz/xz_crc32.c
+    ${XZEMBEDDED}/linux/lib/xz/xz_crc64.c
+    ${XZEMBEDDED}/linux/lib/xz/xz_dec_stream.c
+    ${XZEMBEDDED}/linux/lib/xz/xz_dec_lzma2.c
+    ${XZEMBEDDED}/linux/lib/xz/xz_dec_bcj.c
+)
+target_include_directories(xz_dec_static PUBLIC
+    ${XZEMBEDDED}/linux/include/linux   # <xz.h>
+    ${XZEMBEDDED}/userspace             # "xz_config.h"
+)
+# PUBLIC, not PRIVATE: XZ_USE_CRC64 changes what <xz.h> declares (it exposes
+# xz_crc64_init), and the caller MUST run that initializer before decoding —
+# otherwise the CRC64 table stays all-zero and every stream fails with
+# XZ_DATA_ERROR. Same for XZ_DEC_ANY_CHECK, which is what lets a stream carrying
+# a SHA-256 check (xz-embedded cannot verify it) still decode instead of being
+# rejected outright.
+target_compile_definitions(xz_dec_static PUBLIC
+    XZ_DEC_X86 XZ_DEC_ARM XZ_DEC_ARMTHUMB XZ_DEC_ARM64
+    XZ_USE_CRC64 XZ_DEC_ANY_CHECK XZ_DEC_CONCATENATED)
+
+# soong's libbz (external/bzip2/Android.bp): these seven sources, -O3 -DUSE_MMAP.
+add_library(bz2_dec_static STATIC
+    ${BZIP2}/blocksort.c
+    ${BZIP2}/bzlib.c
+    ${BZIP2}/compress.c
+    ${BZIP2}/crctable.c
+    ${BZIP2}/decompress.c
+    ${BZIP2}/huffman.c
+    ${BZIP2}/randtable.c
+)
+target_include_directories(bz2_dec_static PUBLIC ${BZIP2})
+target_compile_definitions(bz2_dec_static PRIVATE USE_MMAP)
+
 # ------------------------------------------------------ fastboot glue (UX)
 # MeowArchMobile additions compiled alongside the upstream sources: color,
 # live progress bar + speed, message catalog (i18n), generated help renderer
@@ -395,6 +446,7 @@ target_compile_definitions(lp_static PRIVATE _FILE_OFFSET_BITS=64)
 # into this library; everything else here is self-contained.
 add_library(fastboot_glue STATIC
     src/fb_color.cpp
+    src/fb_payload.cpp
     src/fb_progress.cpp
     src/fb_i18n.cpp
     src/fb_i18n_en.cpp
@@ -407,7 +459,20 @@ add_library(fastboot_glue STATIC
     src/fbglue.cpp
 )
 target_include_directories(fastboot_glue PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(fastboot_glue PUBLIC base_static)
+target_link_libraries(fastboot_glue PUBLIC
+    base_static xz_dec_static bz2_dec_static)
+# fb_payload.cpp verifies SHA-256 through <openssl/sha.h>: the system OpenSSL
+# on Linux, and shim/win_compat/openssl/sha.h (over libavb, as liblp does) on
+# Windows — one API, identical digests, no extra dependency on either platform.
+if(WIN32_BUILD)
+    target_include_directories(fastboot_glue PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/shim/win_compat"
+        ${AVB} ${AVB}/libavb ${AVB}/libavb/sha)
+    target_compile_definitions(fastboot_glue PUBLIC AVB_COMPILATION)
+    target_link_libraries(fastboot_glue PUBLIC avb_sha_win)
+else()
+    target_link_libraries(fastboot_glue PUBLIC OpenSSL::Crypto)
+endif()
 target_compile_options(fastboot_glue PRIVATE -Wall -Wextra -Wformat=2)
 # Format-string safety: fb_progress/fb_i18n build format strings by hand and
 # hand them to fprintf/StringPrintf; a %s/arg count mismatch reads a garbage

@@ -147,6 +147,15 @@ static const MsgEntry kJaTable[] = {
     {kInvalidGsiCommand, "無効な gsi コマンド"},
     {kExpectedSnapshotUpdate, "次の形式が必要です: snapshot-update [cancel|merge]"},
     {kUnsupportedFsOption, "未対応のオプション: %s"},
+    // -- flash-x (payload.bin extraction)
+    {kHFlashX, "flash-x\tOTA の payload.bin からパーティションを抽出して書き込みます。\n\tイメージ名は省略時、パーティション名（スロット接尾辞を\n\t除く）を使います。"},
+    {kExtracting, "payload.bin から '%s' を展開中"},
+    {kPayloadOpenFailed, "payload '%s' を開けません: %s"},
+    {kPayloadInvalid, "'%s' は使用可能な payload.bin ではありません: %s"},
+    {kPayloadDelta, "'%s': 差分 OTA の payload です。flash-x には完全な payload が必要です"},
+    {kPayloadNoPartition, "payload にパーティション '%s' がありません（利用可能: %s）"},
+    {kPayloadExtractFailed, "payload からの抽出に失敗しました: %s"},
+    {kJunkAfterFlashX, "flash-x の引数は最大3つです: パーティション PAYLOAD [イメージ名]"},
     // -- driver prologs ------------------------------------------------------------
     {kSending, "'%s' を送信中 (%zu KB)"},
     {kSendingSparse, "スパース '%s' を送信中 %zu/%zu (%u KB)"},

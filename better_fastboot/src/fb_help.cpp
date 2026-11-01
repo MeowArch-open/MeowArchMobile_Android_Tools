@@ -149,6 +149,16 @@ const ExtraOption* ExtraOptions(size_t* count) {
     // renders these and the completion generator (fb_completion.cpp) reads
     // their descriptions from the same table.
     static const ExtraOption kExtras[] = {
+        // flash-x is a command, but it has no row in the generated upstream
+        // table (that table is transcribed from upstream's show_help(), which
+        // stays byte-identical), so it is rendered from the same extras list
+        // --help already appends our options from.
+        {"flash-x",
+         "flash-x PARTITION PAYLOAD [NAME]\tExtract PARTITION from an OTA\n"
+         "\tpayload.bin and flash it. NAME names the entry inside\n"
+         "\tthe payload; it defaults to PARTITION with any slot\n"
+         "\tsuffix removed.",
+         fbi18n::kHFlashX},
         {"--lang", "--lang=CODE\tSet interface language (see --list-langs).", fbi18n::kOLang},
         {"--list-langs", "--list-langs\tList available interface languages and exit.",
          fbi18n::kOListLangs},

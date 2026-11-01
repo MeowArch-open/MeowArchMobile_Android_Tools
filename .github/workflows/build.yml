@@ -302,7 +302,8 @@ jobs:
           mkdir -p dist-win32
           cp build-win32/fastboot.exe build-win32/fastboot_selftest.exe \
              build-win32/AdbWinApi.dll build-win32/AdbWinUsbApi.dll dist-win32/
-          cp tests/mock_device.py tests/help-baseline-en.txt dist-win32/
+          cp tests/mock_device.py tests/help-baseline-en.txt \
+             tests/make_payload.py tests/test_flash_x.py dist-win32/
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -381,3 +382,13 @@ jobs:
           strip_cr < flash.txt
           strip_cr < flash.txt | grep -q 'OKAY'
           strip_cr < flash.txt | grep -q 'Finished'
+
+          # flash-x natively on Windows: builds real payload.bin files
+          # (xz/bzip2/raw ops, delta ops, corrupt blobs) and compares what the
+          # exe transmitted with what went in. This is the check that the
+          # statically compiled libxz/libbz2 and the Windows temp-file path
+          # actually work — libbase's TemporaryFile uses _wmktemp_s there, and
+          # extraction must leave no file behind.
+          python test_flash_x.py ./fastboot.exe > flashx.txt 2>&1
+          strip_cr < flashx.txt
+          strip_cr < flashx.txt | tail -1 | grep -q '0 failed'

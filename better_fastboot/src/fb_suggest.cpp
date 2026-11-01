@@ -26,6 +26,9 @@ const std::vector<std::string> kCommands = {
     // dispatch chain
     "getvar", "erase", "format", "signature", "reboot", "reboot-bootloader",
     "reboot-recovery", "reboot-fastboot", "continue", "boot", "flash",
+    // MeowArchMobile addition: extract from payload.bin and flash. Listed here
+    // so Did-you-want and all three completion scripts pick it up.
+    "flash-x",
     "flash:raw", "flashall", "update", "set_active", "stage", "get_staged",
     "oem", "flashing", "create-logical-partition", "delete-logical-partition",
     "resize-logical-partition", "snapshot-update", "fetch", "gsi", "wipe-super",

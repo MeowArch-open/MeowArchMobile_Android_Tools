@@ -20,3 +20,7 @@ better_fastboot/dist-win32/
 .idea/
 *~
 a.out
+
+# Python caches (tests/ scripts import each other)
+__pycache__/
+*.pyc

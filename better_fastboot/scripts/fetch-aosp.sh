@@ -22,6 +22,8 @@
 #   system/extras             ext4_utils (liblp block-device sizing) + mke2fs.conf
 #   external/e2fsprogs        Android fork: mke2fs with -E android_sparse
 #   external/f2fs-tools       Android fork: make_f2fs / make_f2fs_casefold
+#   external/xz-embedded      libxz (REPLACE_XZ in payload.bin) for flash-x
+#   external/bzip2            libbz (REPLACE_BZ in payload.bin) for flash-x
 #   development               SPARSE (host/windows/usb + prebuilt/usb):
 #                             adb_api.h and Google's prebuilt AdbWinApi —
 #                             Windows (mingw i686) build only, see cmake/win32
@@ -71,6 +73,11 @@ fetch system/tools/mkbootimg https://android.googlesource.com/platform/system/to
 fetch system/extras         https://android.googlesource.com/platform/system/extras         fc2494a2abd7ab21774d03deb09c1362bbb0bba8
 fetch external/e2fsprogs    https://android.googlesource.com/platform/external/e2fsprogs    ef148046cf58dc1009da35ed9edb7a7425e19f39
 fetch external/f2fs-tools   https://android.googlesource.com/platform/external/f2fs-tools   d34dcc887617535a0001ea389a2bb8058f41ea05
+# flash-x (payload.bin extraction) needs the two compressors update_engine uses.
+# AOSP's own copies, not the system libraries: mingw has no cross liblzma/libbz2
+# packages, and matching AOSP keeps decode behaviour identical.
+fetch external/xz-embedded  https://android.googlesource.com/platform/external/xz-embedded  d2c16535d139cb185e89120452531bba6b36d3c6
+fetch external/bzip2        https://android.googlesource.com/platform/external/bzip2        0ac9a9daea5cce2e775d5da949508593e2ee9206
 
 # development repo — SPARSE: only host/windows/usb (adb_api.h for
 # usb_windows.cpp) and host/windows/prebuilt/usb (Google's prebuilt

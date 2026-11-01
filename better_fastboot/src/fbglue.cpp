@@ -7,15 +7,18 @@
  */
 #include "fbglue.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <algorithm>
 #include <string>
 
 #include "fb_completion.h"
 #include "fb_help.h"
+#include "fb_payload.h"
 #include "fb_progress.h"
 #include "fb_suggest.h"
 
@@ -131,6 +134,67 @@ int ListLangs() {
     }
     return 0;
 }
+namespace {
+
+// Upstream's Status() format: the message padded to 50 columns, one trailing
+// space, then the bar paints under it. Reproduce it so flash-x's prolog lines
+// up with every other command's.
+constexpr const char* kStatusFormat = "%-50s ";
+
+double NowSeconds() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+void ProgressThunk(uint64_t done, uint64_t total, void*) { fbprogress::Update(done, total); }
+
+// Localizes an extraction failure. The technical detail from fbpayload stays
+// English (it names protobuf fields and decoders); the surrounding sentence is
+// translated, which is what users actually read.
+std::string PayloadErrorText(const fbpayload::Result& r) {
+    switch (r.code) {
+        case fbpayload::Error::kOpen:
+            return StringPrintf(_(fbi18n::kPayloadOpenFailed), r.a.c_str(), strerror(errno));
+        case fbpayload::Error::kNotPayload:
+            return StringPrintf(_(fbi18n::kPayloadInvalid), r.a.c_str(), r.b.c_str());
+        case fbpayload::Error::kDelta:
+            return StringPrintf(_(fbi18n::kPayloadDelta), r.a.c_str());
+        case fbpayload::Error::kNoPartition:
+            return StringPrintf(_(fbi18n::kPayloadNoPartition), r.a.c_str(), r.b.c_str());
+        case fbpayload::Error::kOther:
+            return StringPrintf(_(fbi18n::kPayloadExtractFailed), r.b.c_str());
+        default:
+            return "";
+    }
+}
+
+}  // namespace
+
+PayloadExtraction ExtractFromPayload(const std::string& target_partition,
+                                     const std::string& payload_path, const std::string& inner) {
+    PayloadExtraction out;
+
+    std::string prolog = StringPrintf(_(fbi18n::kExtracting), target_partition.c_str());
+    fprintf(stderr, kStatusFormat, prolog.c_str());
+    fflush(stderr);
+    fbprogress::Arm(StringPrintf(kStatusFormat, prolog.c_str()));
+
+    const double start = NowSeconds();
+    fbpayload::Result r = fbpayload::Extract(payload_path, target_partition, inner, &out.image,
+                                             ProgressThunk, nullptr);
+    fbprogress::Finish();
+
+    if (!r) {
+        out.error = PayloadErrorText(r);
+        fprintf(stderr, "%s\n", fbcolor::Paint(fbcolor::C::Red, _(fbi18n::kFailed)).c_str());
+        return out;
+    }
+    fprintf(stderr, "%s [%7.3fs]\n", fbcolor::Paint(fbcolor::C::Green, _(fbi18n::kOkay)).c_str(),
+            NowSeconds() - start);
+    return out;
+}
+
 void UnknownCommandError(const std::string& command) {
     // Match upstream's syntax_error channel and exit code, but replace the
     // terse message with error + suggestion + help pointer.

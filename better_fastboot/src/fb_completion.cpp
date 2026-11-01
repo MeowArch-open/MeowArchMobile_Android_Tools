@@ -299,6 +299,16 @@ _fastboot_m() {
         update)
             [[ $(type -t compopt) == builtin ]] && compopt -o filenames
             COMPREPLY=( $(compgen -f -X '!*.zip' -- "$cur") $(compgen -d -- "$cur") ) ;;
+        flash-x)
+            # flash-x PARTITION PAYLOAD [NAME]: argument 1 is the partition to
+            # write, argument 2 the payload.bin, argument 3 the entry inside
+            # the payload (defaults to the partition, slot suffix stripped).
+            if ((nargs == 0 || nargs >= 2)); then
+                COMPREPLY=( $(compgen -W "$partitions" -- "$cur") )
+            else
+                [[ $(type -t compopt) == builtin ]] && compopt -o filenames
+                COMPREPLY=( $(compgen -f -- "$cur") $(compgen -d -- "$cur") )
+            fi ;;
         boot | stage | wipe-super)
             _fbma_img_files ;;
     esac
@@ -397,6 +407,9 @@ std::string ZshScript() {
       << "    gsi) compadd -- " << kGsiSubs << " ;;\n"
       << "    snapshot-update) compadd -- " << kSnapshotSubs << " ;;\n"
       << "    set_active) compadd -- " << kSlots << " ;;\n"
+      << "    flash-x)\n"
+      << "      if ((nargs == 1)); then _files\n"
+      << "      else compadd -a partitions; fi ;;\n"
       << "    update) _files -g '*.zip' ;;\n"
       << "    boot|stage|wipe-super) _files -g '*.img' ;;\n"
       << "  esac\n"
@@ -558,6 +571,7 @@ std::string FishScript() {
 
     // Per-command argument vocabularies, position aware.
     //   flash / flash:raw  PARTITION [FILENAME ...]   partition, then images
+    //   flash-x            PARTITION PAYLOAD [NAME]   partition, payload, entry
     //   erase / format     PARTITION
     //   fetch              PARTITION OUT_FILE
     //   getvar             VARIABLE
@@ -570,6 +584,11 @@ std::string FishScript() {
       << "'\n";
     o << base << "'__fbma_arg_from 1 flash flash:raw' -a '(__fbma_img_files)'\n";
     o << base << "'__fbma_arg_is 1 fetch' -a '(__fbma_files)'\n";
+    //   flash-x  PARTITION PAYLOAD [NAME]   partition, then the payload file,
+    //            then the entry inside the payload
+    o << base << "'__fbma_arg_is 0 flash-x' -a '" << kPartitions << "'\n";
+    o << base << "'__fbma_arg_is 1 flash-x' -a '(__fbma_files)'\n";
+    o << base << "'__fbma_arg_from 2 flash-x' -a '" << kPartitions << "'\n";
     o << base << "'__fbma_arg_is 0 getvar' -a '" << kGetvars << "'\n";
     o << base << "'__fbma_arg_is 0 reboot' -a '" << kRebootTargets << "'\n";
     o << base << "'__fbma_arg_is 0 flashing' -a '" << kFlashingSubs << "'\n";

@@ -1,5 +1,5 @@
 diff --git a/fastboot/fastboot.cpp b/fastboot/fastboot.cpp
-index 1c52da2..f30497a 100644
+index 1c52da2..b69a776 100644
 --- a/fastboot/fastboot.cpp
 +++ b/fastboot/fastboot.cpp
 @@ -78,6 +78,9 @@
@@ -315,7 +315,38 @@ index 1c52da2..f30497a 100644
          } else if (command == FB_CMD_REBOOT_BOOTLOADER) {
              tasks.emplace_back(std::make_unique<RebootTask>(fp.get(), "bootloader"));
          } else if (command == FB_CMD_REBOOT_RECOVERY) {
-@@ -2577,13 +2500,13 @@ int FastBootTool::Main(int argc, char* argv[]) {
+@@ -2521,6 +2444,30 @@ int FastBootTool::Main(int argc, char* argv[]) {
+ 
+             FlashTask task(fp->slot_override, pname, fname, is_vbmeta_partition(pname), fp.get());
+             task.Run();
++        } else if (command == "flash-x") {
++            // MeowArchMobile: `flash-x PARTITION PAYLOAD [NAME]` extracts one
++            // partition image out of an OTA payload.bin and flashes it through
++            // the normal FlashTask path, so sparse re-splitting, logical
++            // partition resize, vbmeta rewriting and slot handling are all
++            // upstream behavior. Extraction (and its progress bar) lives in
++            // fbglue; the temp image unlinks when the handle goes out of scope.
++            // Parse everything BEFORE touching the device or the payload:
++            // next_arg() consumes the first token from the global `args` with
++            // no bounds check (it syntax_errors only on an empty list), so a
++            // fourth argument has to be rejected before the third next_arg()
++            // call would eat it as a command and leave fastboot waiting for a
++            // device. Count first, then read.
++            if (args.size() < 2) syntax_error(_(fbi18n::kExpectedArgument));
++            if (args.size() > 3) syntax_error(_(fbi18n::kJunkAfterFlashX));
++            std::string pname = next_arg(&args);
++            std::string payload = next_arg(&args);
++            std::string inner;
++            if (!args.empty()) inner = next_arg(&args);
++            auto extraction = fbglue::ExtractFromPayload(pname, payload, inner);
++            if (!extraction.ok()) die(extraction.error);
++            FlashTask task(fp->slot_override, pname, extraction.image.path(),
++                           is_vbmeta_partition(pname), fp.get());
++            task.Run();
+         } else if (command == "flash:raw") {
+             std::string partition = next_arg(&args);
+             std::string kernel = next_arg(&args);
+@@ -2577,13 +2524,13 @@ int FastBootTool::Main(int argc, char* argv[]) {
              do_oem_command(FB_CMD_OEM, &args);
          } else if (command == "flashing") {
              if (args.empty()) {
@@ -331,7 +362,7 @@ index 1c52da2..f30497a 100644
              }
          } else if (command == FB_CMD_CREATE_PARTITION) {
              std::string partition = next_arg(&args);
-@@ -2599,7 +2522,7 @@ int FastBootTool::Main(int argc, char* argv[]) {
+@@ -2599,7 +2546,7 @@ int FastBootTool::Main(int argc, char* argv[]) {
                      std::make_unique<ResizeTask>(fp.get(), partition, size, fp->slot_override);
              resize_task->Run();
          } else if (command == "gsi") {
@@ -340,7 +371,7 @@ index 1c52da2..f30497a 100644
              std::string cmd("gsi");
              while (!args.empty()) {
                  cmd += ":" + next_arg(&args);
-@@ -2619,7 +2542,7 @@ int FastBootTool::Main(int argc, char* argv[]) {
+@@ -2619,7 +2566,7 @@ int FastBootTool::Main(int argc, char* argv[]) {
                  arg = next_arg(&args);
              }
              if (!arg.empty() && (arg != "cancel" && arg != "merge")) {
@@ -349,7 +380,7 @@ index 1c52da2..f30497a 100644
              }
              fb->SnapshotUpdateCommand(arg);
          } else if (command == FB_CMD_FETCH) {
-@@ -2627,7 +2550,7 @@ int FastBootTool::Main(int argc, char* argv[]) {
+@@ -2627,7 +2574,7 @@ int FastBootTool::Main(int argc, char* argv[]) {
              std::string outfile = next_arg(&args);
              do_fetch(partition, fp->slot_override, outfile, fp->fb);
          } else {
@@ -358,7 +389,7 @@ index 1c52da2..f30497a 100644
          }
      }
  
-@@ -2649,7 +2572,7 @@ int FastBootTool::Main(int argc, char* argv[]) {
+@@ -2649,7 +2596,7 @@ int FastBootTool::Main(int argc, char* argv[]) {
      for (auto& task : tasks) {
          task->Run();
      }
@@ -367,7 +398,7 @@ index 1c52da2..f30497a 100644
  
      return 0;
  }
-@@ -2691,7 +2614,7 @@ unsigned FastBootTool::ParseFsOption(const char* arg) {
+@@ -2691,7 +2638,7 @@ unsigned FastBootTool::ParseFsOption(const char* arg) {
          else if (options[i] == "compress")
              fsOptions |= (1 << FS_OPT_COMPRESS);
          else

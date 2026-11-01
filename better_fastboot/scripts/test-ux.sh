@@ -28,8 +28,11 @@ echo "== 2. English byte-parity (piped, no color) =="
 # help: our five extra options are appended; everything else is verbatim.
 H="$(LANG=en_US.UTF-8 NO_COLOR=1 "$FB" --help 2>/dev/null)"
 N="$(printf '%s\n' "$H" | grep -c '')"
-# upstream help is exactly 100 lines; ours adds 1 blank + 5 options = 106
-if [ "$N" = "106" ]; then ok "help line count (100 upstream + 6 ours)"; else bad "help line count = $N"; fi
+# upstream help is exactly 100 lines. Ours appends one blank line, the flash-x
+# command row (4 lines: the command, then three description lines) and the five
+# option rows (1 line each) = 109. The first 100 stay byte-identical, which the
+# baseline diff below is what actually guarantees.
+if [ "$N" = "109" ]; then ok "help line count (100 upstream + 9 ours)"; else bad "help line count = $N"; fi
 # byte-parity against the committed upstream baseline (tests/help-baseline-en.txt,
 # captured from the distro platform-tools fastboot --help).
 if printf '%s\n' "$H" | head -100 | diff -q - "$HERE/tests/help-baseline-en.txt" >/dev/null 2>&1; then
@@ -151,6 +154,20 @@ else
   skip "python3 unavailable (sparse-progress regression)"
 fi
 
+# flash-x: extract a partition out of a payload.bin and flash it. Drives the
+# real binary over TCP and compares the transmitted bytes with what the payload
+# generator put in, so the whole chain is covered (manifest decode, xz/bz2/raw
+# decompression, extent placement, SHA-256 verification, temp-file handoff).
+if command -v python3 >/dev/null 2>&1; then
+  FX="$(python3 "$HERE/tests/test_flash_x.py" "$FB" 2>&1 | tail -1)"
+  case "$FX" in
+    *"0 failed"*) ok "flash-x end-to-end ($FX)" ;;
+    *)            bad "flash-x: $FX" ;;
+  esac
+else
+  skip "python3 unavailable (flash-x end-to-end)"
+fi
+
 echo "== 5. shell completions (bash/zsh/fish) =="
 for SH in bash zsh fish; do
   OUT="$(LANG=en_US.UTF-8 "$FB" --shell-completion=$SH 2>/dev/null)"
@@ -234,10 +251,17 @@ try_file() {
 try_file "flash2->img"  "boot.img"   fastboot-m flash boot_a ""
 try_file "flash2->./img" "./boot.img" fastboot-m flash boot_a "./"
 try_file "flash:raw2->img" "boot.img" fastboot-m flash:raw boot ""
+# flash-x PARTITION PAYLOAD [NAME]: partition, then a file, then a payload entry
+try_file "flash-x1->payload" "note.txt" fastboot-m flash-x boot ""
+COMP_WORDS=(fastboot-m flash-x boot ""); COMP_CWORD=3; COMPREPLY=(); _fastboot_m
+case "\${COMPREPLY[*]}" in
+  *vendor_boot*) echo "  FAIL flash-x3 should offer payload entries"; FAIL=\$((FAIL+1));;
+  *) PASS=\$((PASS+1));;
+esac
 echo "drive: \$PASS passed, \$FAIL failed"
 [ "\$FAIL" -eq 0 ]
 EOS
-  if bash /tmp/fbcomp-drive.sh; then ok "bash functional drive (8 vocab checks)"; else bad "bash functional drive"; fi
+  if bash /tmp/fbcomp-drive.sh; then ok "bash functional drive (10 checks)"; else bad "bash functional drive"; fi
 fi
 # zsh functional drive (17 vocab checks) when a zsh is available
 if command -v zsh >/dev/null 2>&1; then
@@ -288,6 +312,14 @@ if command -v fish >/dev/null 2>&1; then
     bad "fish drive: flash2->img"; FISHFAIL=$((FISHFAIL+1))
   fi
   fish_neg "flash2 no partitions" "flash boot_a " "vendor_boot"
+  fish_try "flash-x3->entries" "flash-x boot p.bin " "vendor_boot"
+  # the PAYLOAD position offers files, and only from the right directory
+  if fish -c "source /tmp/fbcomp-fishcomp/fastboot-m.fish; cd /tmp/ct; complete -C 'fastboot-m flash-x boot '" 2>/dev/null | grep -qx -- "note.txt"; then
+    ok "fish drive: flash-x2->files"; FISHPASS=$((FISHPASS+1))
+  else
+    bad "fish drive: flash-x2->files"; FISHFAIL=$((FISHFAIL+1))
+  fi
+  fish_neg "flash-x2 no partitions" "flash-x boot " "vendor_boot"
   fish_neg "flash2 no notes.txt"  "flash boot_a " "note.txt"
   if [ "$FISHFAIL" -eq 0 ]; then ok "fish drive: all $FISHPASS checks"; fi
   export PATH="${PATH#/tmp/fbcomp-fishbin:}"

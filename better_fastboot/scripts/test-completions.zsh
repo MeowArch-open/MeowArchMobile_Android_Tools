@@ -95,6 +95,24 @@ run_flash2_negative() {
 }
 run_flash2_negative
 
+# flash-x PARTITION PAYLOAD [NAME]: argument 1 is a partition, argument 2 the
+# payload file, argument 3 an entry name inside the payload.
+try "flash-x -> partitions"    "vendor_boot"     "flash-x" ""
+try "flash-x2 -> files"        "<files>"         "flash-x" "boot" ""
+try "flash-x3 -> entries"      "vendor_boot"     "flash-x" "boot" "payload.bin" ""
+run_flashx_negative() {
+  CAPTURED=""
+  words=(fastboot-m flash-x boot "")
+  CURRENT=${#words}
+  _fastboot_m >/dev/null 2>&1
+  if [[ $CAPTURED == *"vendor_boot"* ]]; then
+    print "  FAIL flash-x2 offers partitions: '$CAPTURED'"; fail+=1
+  else
+    print "  ok   flash-x2 does not offer partitions"; pass+=1
+  fi
+}
+run_flashx_negative
+
 print "== zsh completion: $pass passed, $fail failed =="
 rm -rf $tmpdir
 [[ $fail -eq 0 ]]

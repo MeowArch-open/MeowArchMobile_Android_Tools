@@ -43,7 +43,7 @@ case "$V" in *"fastboot version"*) ok "--version: $V" ;; *) bad "--version: $V" 
 # Windows console stdio is CRLF; upstream parity is checked after stripping.
 H="$(LANG=en_US.UTF-8 NO_COLOR=1 wfb --help | tr -d '\r')"
 N="$(printf '%s\n' "$H" | grep -c '')"
-[ "$N" = "106" ] && ok "help line count (100 upstream + 6 ours)" || bad "help line count = $N"
+[ "$N" = "109" ] && ok "help line count (100 upstream + 9 ours)" || bad "help line count = $N"
 # Committed upstream baseline: tests/help-baseline-en.txt (captured from the
 # distro platform-tools fastboot --help, first 100 lines).
 printf '%s\n' "$H" | head -100 > /tmp/fb-win-help100.txt
@@ -89,6 +89,17 @@ else
         bad "flash over TCP: $OUT"
     fi
     rm -f "$IMG"
+fi
+
+echo "== 5. flash-x (payload.bin extraction) under wine =="
+if ! command -v python3 >/dev/null 2>&1; then
+    skip "python3 unavailable"
+else
+    FX="$(timeout 900 python3 "$HERE/tests/test_flash_x.py" "$FB" --runner wine 2>&1 | tail -1)"
+    case "$FX" in
+        *"0 failed"*) ok "flash-x end-to-end under wine ($FX)" ;;
+        *)            bad "flash-x under wine: $FX" ;;
+    esac
 fi
 
 echo

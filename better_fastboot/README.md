@@ -60,10 +60,12 @@ dist — the package installs them side by side (see PKGBUILD for the
             src/ — progress callback in the driver's transfer loops,
             localized prolog/epilog/error strings, colored OKAY/FAILED,
             Did-you-want on unknown commands/options (validated BEFORE the
-            device-wait), and --lang/--color/--no-progress getopt entries.
-            The fd-download path also gains 1 MiB transport chunking so the
-            bar advances (protocol-transparent: the device consumes exactly
-            the DATA byte count regardless of framing).
+            device-wait), --lang/--color/--no-progress getopt entries, the
+            `flash-x` dispatch branch, and 1 MiB transport chunking in
+            SendBuffer(buf, size) — the one every caller funnels through — so
+            the bar advances even inside a single huge sparse chunk
+            (protocol-transparent: the device consumes exactly the DATA byte
+            count regardless of framing).
     src/                  the UX glue library (fastboot_glue), no AOSP code:
       fb_progress.{h,cpp}   bar renderer: throttle, speed ring buffer, ETA
       fb_color.{h,cpp}      SGR escapes; tty/NO_COLOR/FORCE_COLOR detection
@@ -80,8 +82,12 @@ dist — the package installs them side by side (see PKGBUILD for the
                             command/option vocabularies
       fb_completion.{h,cpp} --shell-completion={bash,zsh,fish} script generator
                             (same vocabularies as fb_suggest + help rows)
+      fb_payload.{h,cpp}    payload.bin reader for flash-x: CrAU header,
+                            hand-written protobuf manifest decode, xz/bz2/raw
+                            op replay into extents, SHA-256 verification
       fbglue.{h,cpp}        the API the patch calls: EarlyInit, Validate-
-                            FirstCommand, UnknownCommandError, ListLangs, ...
+                            FirstCommand, UnknownCommandError, ListLangs,
+                            ExtractFromPayload, ...
     shim/                 build version stamp + platform_tools_version.h.in
                           (generated at configure time; -DPLATFORM_TOOLS_VERSION=...)
                           gnu_compat/: GCC-only shims — force-included compat.h
@@ -104,6 +110,11 @@ dist — the package installs them side by side (see PKGBUILD for the
                           flashes a huge sparse chunk over a pty and fails if
                           any bar frame is more than 1.5s late (the super/
                           big-partition freeze-and-jump regression)
+    tests/make_payload.py  builds real payload.bin files for the flash-x tests
+                          (xz/bz2/raw ops, multi-op extents, delta ops,
+                          corrupt blobs, hashes on/off)
+    tests/test_flash_x.py  drives flash-x over TCP and compares the transmitted
+                          bytes with the payload's contents (19 checks)
     tests/help-baseline-en.txt
                           upstream `fastboot --help` (first 100 lines), captured
                           from the distro platform-tools build — the byte-parity
@@ -137,11 +148,17 @@ are the snapshot):
 | external/fmtlib (built into libbase)        | `97ceae9d27415d6444f3e24f491da8ed6902ecfa` | MIT (fmt)          |
 | external/googletest (gtest_prod.h only)     | `cbeab5d01811d23ea488efc07f2c31f7c53024e2` | BSD-3              |
 | external/zlib                               | `f29fc757b1f27c182f36790eb0ccc6cf8ec27e8e` | Zlib               |
+| external/xz-embedded (libxz, for `flash-x`) | `d2c16535d139cb185e89120452531bba6b36d3c6` | 0BSD / public domain |
+| external/bzip2 (libbz, for `flash-x`)       | `0ac9a9daea5cce2e775d5da949508593e2ee9206` | BSD-like           |
 
 System libraries (like Arch's own android-tools): `zlib`, `libcrypto`
-(OpenSSL — liblp metadata SHA256), `libstdc++`/`libc++`. BoringSSL is **not**
-built; nothing here needs TLS. No protobuf, no adb host lib — the host
-fastboot chain references neither.
+(OpenSSL — liblp metadata SHA256 and `flash-x`'s payload checks),
+`libstdc++`/`libc++`. BoringSSL is **not** built; nothing here needs TLS.
+No protobuf either: `flash-x` parses the payload manifest with its own
+minimal reader, and no adb host lib is used. The Windows build swaps
+`libcrypto` for `shim/win_compat/openssl/sha.h` over libavb's SHA-256 (the
+same shim liblp already uses there), and compiles libxz/libbz statically —
+mingw has no cross `liblzma`/`libbz2` in Arch's repos.
 
 Header-only reuse from the tree: `libavb` (AVB footer constants),
 `bootimg.h` (boot/vendor-boot header structs), `libstorage_literals`.
@@ -272,6 +289,76 @@ and `LANG=en`, `--help`/`--version`/error output match upstream exactly —
 except the five extra options appended to the help and the `Did you want`
 hint replacing the bare `unknown command` line.
 
+### `flash-x`: flash straight out of a payload.bin
+
+    fastboot-m flash-x <partition> <payload.bin> [<entry-name>]
+
+`payload.bin` is the OTA image container inside a factory/OTA zip. Upstream
+fastboot cannot read it: you have to unpack it first (`payload-dumper-go`,
+`magiskboot`, `unzip` + python), then flash the resulting `.img`. `flash-x`
+does both in one step:
+
+    fastboot-m flash-x boot_a payload.bin          # entry "boot" (suffix stripped)
+    fastboot-m flash-x boot payload.bin boot_b     # explicit entry name
+    fastboot-m flash-x system payload.bin          # same for dynamic partitions
+
+What it does:
+
+* reads the `CrAU` header (major version 2) and the protobuf
+  `DeltaArchiveManifest`, parsed by a small built-in reader — no libprotobuf
+  dependency;
+* replays the partition's install operations into a temp image, decoding
+  `REPLACE` (raw), `REPLACE_XZ` and `REPLACE_BZ` through AOSP's own
+  `external/xz-embedded` and `external/bzip2`, and materializing `ZERO`/
+  `DISCARD` ranges as holes;
+* verifies SHA-256 twice over — each operation blob against its
+  `data_sha256_hash`, and the finished image against
+  `new_partition_info.hash` (the same check update_engine's filesystem verifier
+  performs), so a truncated or corrupt payload fails before anything is
+  written to the device;
+* hands the temp file to upstream's own `FlashTask`, so sparse re-splitting,
+  logical-partition resize, vbmeta rewriting, `--slot` and the progress bar all
+  behave exactly as `flash` does. The temp file is unlinked as soon as the
+  flash returns.
+
+Two things to know before using it on a big partition:
+
+* Extraction writes a **full uncompressed temp image** to disk before the
+  flash starts, so you need free space equal to the partition's size (a
+  `super` entry wants several GiB). The location is `TMPDIR` on Linux
+  (`/tmp` by default — often a tmpfs, i.e. RAM) and `%TMP%`/`GetTempPathW` on
+  Windows. Point `TMPDIR` at a real disk for large extractions:
+  `TMPDIR=/var/tmp fastboot-m flash-x super payload.bin`.
+* The image is sized with `ftruncate64` on Windows, because the mingw i686
+  build's `off_t` is 32 bits without `_FILE_OFFSET_BITS=64`; a plain
+  `ftruncate` would silently clamp anything over 2 GiB. Verified end to end
+  with a 2.2 GiB `super` entry on both builds.
+
+Limits, stated plainly: only **full** payloads work (`minor_version == 0`). A
+delta/incremental payload's `SOURCE_COPY`, `SOURCE_BSDIFF`, `PUFFDIFF`,
+`BROTLI_BSDIFF`, `ZUCCHINI` and `LZ4DIFF_*` operations read the partition as it
+currently exists on the device, which fastboot cannot do; `flash-x` refuses
+those with an explicit message rather than producing a half-written image. An
+xz blob carrying a SHA-256 integrity check decodes fine but its xz-level check
+is skipped, since xz-embedded cannot compute SHA-256 — the manifest hashes
+above cover it, and a test pins that behaviour (with `XZ_DEC_ANY_CHECK` absent
+that stream is rejected outright, so this is the define doing work, not luck).
+
+Extraction reports progress on its own bar (`Extracting 'boot' from
+payload.bin`), then the flash reports on the usual one; `--no-progress` and
+`NO_PROGRESS=1` silence both. Errors and the help row are localized in all four
+languages.
+
+`tests/make_payload.py` builds real payloads — any codec, multiple ops, delta
+ops, corrupt blobs, hashes on/off, missing `dst_length`, short `data_length`,
+every xz check type — and `tests/test_flash_x.py` flashes them over TCP
+against the mock device, comparing the transmitted bytes with what went in: 36
+checks (including ten malformed/hostile payloads that must fail cleanly), run in
+`scripts/test-ux.sh`, in the wine suite, and natively on `windows-latest` in CI. The same set runs against the ASAN build
+locally. One bug it exists to catch: xz-embedded builds its CRC tables at run
+time, and forgetting `xz_crc32_init()` makes every stream fail with
+`XZ_DATA_ERROR` instead of anything that names the cause.
+
 ### Shell completions (bash / zsh / fish)
 
 The binary generates its own completion scripts, so the vocabulary always
@@ -300,7 +387,8 @@ today's command set and knows nothing about our options).
 
 What completes: all commands and options before/instead of a command;
 partitions for the *first* argument of `flash`/`flash:raw`/`erase`/`format`/
-`fetch`; `*.img` files and directories for the *second and later* arguments of
+`fetch` and of `flash-x` (any file for its payload argument, partition names
+again for the optional entry name); `*.img` files and directories for the *second and later* arguments of
 `flash`/`flash:raw` (so `fastboot-m flash boot_a <TAB>` offers `./boot.img`,
 not another partition name), any file for `fetch`'s output argument, and
 `*.img` for `boot`/`stage`/`wipe-super`; `*.zip` after `update`;
