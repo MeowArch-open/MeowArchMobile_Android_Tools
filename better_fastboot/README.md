@@ -110,7 +110,7 @@ dist — the package installs them side by side (see PKGBUILD for the
     win-prebuilt/usb/     Google's prebuilt AdbWinApi.dll/.a + AdbWinUsbApi.dll
                           and adb_api.h (Apache-2.0; the exact files soong
                           links into the official Windows fastboot.exe)
-    PKGBUILD              Arch package `fastboot-m` (x86_64)
+    PKGBUILD              Arch package `fastboot-meowarch` (x86_64)
 
 ## Upstream
 

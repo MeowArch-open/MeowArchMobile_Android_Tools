@@ -30,7 +30,7 @@ On the device (adbd):
 
 On the host (fastboot):
 
-    pacman -U fastboot-m-*.pkg.tar.zst
+    pacman -U fastboot-meowarch-*.pkg.tar.zst
     fastboot-m devices
     fastboot-m flash boot boot.img
 

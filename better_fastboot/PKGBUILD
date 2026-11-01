@@ -1,5 +1,5 @@
 # Maintainer: MeowArchMobile
-# fastboot-m — AOSP's official host fastboot tool, built standalone.
+# fastboot-meowarch — AOSP's official host fastboot tool, built standalone.
 #
 # This PKGBUILD runs in-place inside better_fastboot/ next to a checkout of
 # the AOSP tree (../aosp-adbd, shared with adbd-standalone). Build first:
@@ -13,16 +13,17 @@
 #
 # Layout rationale: fastboot locates mke2fs / make_f2fs / mke2fs.conf via
 # GetExecutableDirectory() (/proc/self/exe), so the real binaries all live in
-# /usr/lib/fastboot-m/ and the commands in /usr/bin are symlinks into it — a
-# symlink resolves through /proc/self/exe, so the helpers are found.
+# /usr/lib/fastboot-meowarch/ and the commands in /usr/bin are symlinks into
+# it — a symlink resolves through /proc/self/exe, so the helpers are found.
 #
-# Command name: `fastboot-m` is short and cannot collide with the distro's
-# android-tools, which owns /usr/bin/fastboot and its completion files.
-# `fastboot-meowarch` is kept as a second symlink + completion so existing
-# scripts and muscle memory keep working. Nothing here overwrites android-tools:
-# both packages install side by side.
+# Package vs command name: the package keeps its original name
+# (fastboot-meowarch, unchanged so upgrades are seamless); the *commands* are
+# `fastboot-m` (short, primary) and `fastboot-meowarch` (kept as an alias so
+# existing scripts keep working). Neither collides with the distro's
+# android-tools, which owns /usr/bin/fastboot and its completion files — both
+# packages install side by side.
 
-pkgname=fastboot-m
+pkgname=fastboot-meowarch
 pkgver=36.0.0
 pkgrel=3
 pkgdesc="AOSP host fastboot tool (official usb_linux backend), built standalone — with Android mke2fs/make_f2fs for 'fastboot -w'"
@@ -39,7 +40,7 @@ options=(!strip)             # keep debug info; RelWithDebInfo
 package() {
     local root
     root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-    local libdir="$pkgdir/usr/lib/fastboot-m"
+    local libdir="$pkgdir/usr/lib/fastboot-meowarch"
 
     install -Dm755 "$root/build-native/fastboot"             "$libdir/fastboot"
     install -Dm755 "$root/build-native/mke2fs"               "$libdir/mke2fs"
@@ -54,8 +55,8 @@ package() {
     # Two command names, one binary: fastboot-m (short, primary) and
     # fastboot-meowarch (the original, kept as an alias).
     install -d "$pkgdir/usr/bin"
-    ln -s ../lib/fastboot-m/fastboot "$pkgdir/usr/bin/fastboot-m"
-    ln -s ../lib/fastboot-m/fastboot "$pkgdir/usr/bin/fastboot-meowarch"
+    ln -s ../lib/fastboot-meowarch/fastboot "$pkgdir/usr/bin/fastboot-m"
+    ln -s ../lib/fastboot-meowarch/fastboot "$pkgdir/usr/bin/fastboot-meowarch"
 
     # Shell completions for bash, zsh and fish — GENERATED from the built
     # binary (`--shell-completion=SHELL`), so the vocabulary always matches

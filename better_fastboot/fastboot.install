@@ -1,13 +1,13 @@
-# fastboot-m install hook
+# fastboot-meowarch install hook
 
 post_install() {
     cat <<'EOF'
-fastboot-m: use `fastboot-m` (short name), or `fastboot-meowarch` — both are
-  symlinks to the same binary. The distro's android-tools `fastboot` is left
-  untouched, so both can be installed side by side.
-  USB works like platform-tools; if `fastboot-m devices` is empty but lsusb
+fastboot-meowarch: the commands are `fastboot-m` (short) and `fastboot-meowarch`
+  (alias) — both are symlinks to the same binary. The distro's android-tools
+  `fastboot` is left untouched, so both packages can be installed side by side.
+  USB works like platform-tools; if `fastboot-m devices` is empty but `lsusb`
   sees the phone, install udev rules (AUR: android-udev) or run as root.
-  mke2fs/make_f2fs/mke2fs.conf live in /usr/lib/fastboot-m/ and are found
-  automatically by the fastboot binary (same-directory lookup).
+  mke2fs/make_f2fs/mke2fs.conf live in /usr/lib/fastboot-meowarch/ and are
+  found automatically by the fastboot binary (same-directory lookup).
 EOF
 }

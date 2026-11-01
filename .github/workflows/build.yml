@@ -234,16 +234,16 @@ jobs:
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
           chown -R builder:builder . ../aosp-adbd
           sudo -u builder bash -c 'makepkg -f'
-          tar --zstd -xOf fastboot-m-*.pkg.tar.zst .PKGINFO | grep '^arch = x86_64$'
+          tar --zstd -xOf fastboot-meowarch-*.pkg.tar.zst .PKGINFO | grep '^arch = x86_64$'
           # both command names must be present in the package
-          tar --zstd -tf fastboot-m-*.pkg.tar.zst | grep -qx 'usr/bin/fastboot-m'
-          tar --zstd -tf fastboot-m-*.pkg.tar.zst | grep -qx 'usr/bin/fastboot-meowarch'
+          tar --zstd -tf fastboot-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/fastboot-m'
+          tar --zstd -tf fastboot-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/fastboot-meowarch'
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: fastboot-m-x86_64-pkg
-          path: better_fastboot/fastboot-m-*.pkg.tar.zst
+          name: fastboot-meowarch-x86_64-pkg
+          path: better_fastboot/fastboot-meowarch-*.pkg.tar.zst
           if-no-files-found: error
 
   build-fastboot-windows:
@@ -307,7 +307,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: fastboot-m-win32
+          name: fastboot-meowarch-win32
           path: better_fastboot/dist-win32/*
           if-no-files-found: error
 
@@ -323,7 +323,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: fastboot-m-win32
+          name: fastboot-meowarch-win32
           path: dist
 
       - name: Smoke test
