@@ -169,6 +169,20 @@ fi
 OUT="$("$FB" --shell-completion=csh 2>&1)"; RC=$?
 if [ $RC -eq 1 ] && printf '%s' "$OUT" | grep -q "unknown shell 'csh'"; then
   ok "unknown shell errors (rc=1)"
+  # Each shell autoloads a completion by *command name*, so the package must
+  # install the script under both fastboot-m and fastboot-meowarch; and the
+  # scripts must register for both (otherwise the short name gets nothing).
+  for sh in bash zsh fish; do
+    case $sh in
+      bash) out=$("$FB" --shell-completion=bash); want='complete -F _fastboot_m fastboot-m fastboot-meowarch' ;;
+      zsh)  out=$("$FB" --shell-completion=zsh);  want='#compdef fastboot-m fastboot-meowarch' ;;
+      fish) out=$("$FB" --shell-completion=fish); want='complete -c fastboot-m -c fastboot-meowarch' ;;
+    esac
+    case "$out" in
+      *"$want"*) ok "$sh completion registers both command names" ;;
+      *) bad "$sh completion missing '$want'" ;;
+    esac
+  done
 else
   bad "unknown shell: rc=$RC out=$OUT"
 fi

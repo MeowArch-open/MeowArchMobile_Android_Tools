@@ -271,6 +271,11 @@ the same script a second time under `fastboot-meowarch` (`_fastboot-meowarch`,
 (`complete -F _fastboot_m fastboot-m fastboot-meowarch`, `#compdef fastboot-m
 fastboot-meowarch`, `complete -c fastboot-m -c fastboot-meowarch`).
 
+Both halves matter: dropping either one leaves `fastboot-m` with no completion
+at all — either fish/bash find no file to autoload for that name, or the file
+they do find only declares rules for the long name. `scripts/test-ux.sh`
+asserts both the file pair and the double registration.
+
 The Arch package runs exactly these at package() time (that is why the
 upstream 2017-era `fastboot.bash` is no longer shipped: it predates half of
 today's command set and knows nothing about our options).
