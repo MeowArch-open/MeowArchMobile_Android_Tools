@@ -1,0 +1,9 @@
+{
+	"InstallScripts" : 
+	[
+		"/run/media/xingguangcuican/Project/MeowArchMobile_Adbd/adb-standalone/build-native/cmake_install.cmake",
+		"/run/media/xingguangcuican/Project/MeowArchMobile_Adbd/adb-standalone/build-native/boringssl/cmake_install.cmake",
+		"/run/media/xingguangcuican/Project/MeowArchMobile_Adbd/adb-standalone/build-native/protobuf/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

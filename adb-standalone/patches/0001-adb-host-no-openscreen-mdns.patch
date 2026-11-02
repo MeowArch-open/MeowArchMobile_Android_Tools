@@ -1,0 +1,66 @@
+diff --git a/adb.cpp b/adb.cpp
+index a240676..7442ea9 100644
+--- a/adb.cpp
++++ b/adb.cpp
+@@ -1360,7 +1360,10 @@ HostRequestResult handle_host_request(std::string_view service, TransportType ty
+         }
+         status.set_usb_backend_forced(getenv("ADB_LIBUSB") != nullptr);
+ 
+-        if (using_bonjour()) {
++        if (!mdns_backend_available()) {
++            // MeowArchMobile: no mDNS backend compiled in (see adb_mdns.h).
++            status.set_mdns_backend(adb::proto::AdbServerStatus::UNKNOWN_MDNS);
++        } else if (using_bonjour()) {
+             status.set_mdns_backend(adb::proto::AdbServerStatus::BONJOUR);
+         } else {
+             status.set_mdns_backend(adb::proto::AdbServerStatus::OPENSCREEN);
+diff --git a/adb_mdns.h b/adb_mdns.h
+index e2da4b5..1c15c72 100644
+--- a/adb_mdns.h
++++ b/adb_mdns.h
+@@ -48,7 +48,24 @@ extern const char* _Nonnull kADBDNSServices[kNumADBDNSServices];
+ extern const char* _Nonnull kADBDNSServiceTxtRecords[kNumADBDNSServices];
+ 
+ #if ADB_HOST
+-#include "client/openscreen/mdns_service_info.h"
++// MeowArchMobile: openscreen is not part of the AOSP tree the standalone build
++// pins (it lives in chromium.googlesource.com/openscreen, not AOSP), so
++// ServiceInfo is declared here instead of coming from
++// client/openscreen/mdns_service_info.h. Field-for-field the same record, with
++// string addresses instead of openscreen::IPAddress — its only consumers are
++// the two mDNS backends, which a standalone host build leaves out.
++namespace mdns {
++struct ServiceInfo {
++    std::string instance_name;
++    std::string service_name;
++    std::string v4_address;
++    std::string v6_address;
++    uint16_t port = 0;
++
++    std::string v4_address_string() const { return v4_address; }
++    std::string v6_address_string() const { return v6_address; }
++};
++}  // namespace mdns
+ // ADB Secure DNS service interface. Used to query what ADB Secure DNS services have been
+ // resolved, and to run some kind of callback for each one.
+ using adb_secure_foreach_service_callback = std::function<void(const mdns::ServiceInfo& si)>;
+@@ -68,6 +85,19 @@ void mdns_cleanup();
+ std::string mdns_check();
+ std::string mdns_list_discovered_services();
+ 
++// MeowArchMobile: the mDNS backends (openscreen + mDNSResponder) are not built
++// here, so transport_mdns.cpp/mdnsresponder_client.cpp are out and these are
++// provided by shim/mdns_stub.cpp instead. Declaring the transport entry point
++// here keeps the rest of adb (main.cpp calls it when mDNS is enabled) linking
++// unchanged; the stub is a no-op and mdns::is_enabled() reports false.
++void init_mdns_transport_discovery();
++
++// MeowArchMobile: true when an mDNS discovery backend is compiled in. The
++// standalone build has none (openscreen and mDNSResponder are out of tree), so
++// `adb server-status` reports UNKNOWN_MDNS instead of naming a backend that is
++// not there.
++bool mdns_backend_available();
++
+ struct MdnsInfo {
+     std::string service_name;
+     std::string service_type;

@@ -1,0 +1,44 @@
+# Maintainer: MeowArchMobile
+# adb-standalone — AOSP's host adb client, built standalone.
+#
+# Runs in place next to a checkout of the AOSP tree (../aosp-adbd, shared with
+# adbd-standalone and better_fastboot). Build first:
+#
+#   cmake -B build-native -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+#         -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+#   cmake --build build-native -j$(nproc)
+#   makepkg -f
+#
+# Layout: the binary lives in /usr/lib/adb-meowarch/ and /usr/bin/adb-meowarch
+# is a symlink — nothing collides with the distro's android-tools, which keeps
+# owning /usr/bin/adb and /usr/bin/fastboot. Both packages install side by side.
+
+pkgname=adb-meowarch
+pkgver=36.0.0
+pkgrel=1
+pkgdesc="AOSP host adb client (platform-tools adb), built standalone against Arch's libusb"
+arch=('x86_64')
+url="https://android.googlesource.com/platform/packages/modules/adb/"
+license=('Apache')
+depends=('glibc' 'gcc-libs' 'zlib' 'liblz4' 'zstd' 'brotli' 'libusb')
+makedepends=('cmake' 'clang' 'ninja' 'pkgconf')
+optdepends=('android-udev: udev rules so adb sees phones without root')
+install=adb.install
+options=(!strip)
+
+package() {
+    local root
+    root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+    local libdir="$pkgdir/usr/lib/adb-meowarch"
+
+    install -Dm755 "$root/build-native/adb" "$libdir/adb"
+
+    install -d "$pkgdir/usr/bin"
+    ln -s ../lib/adb-meowarch/adb "$pkgdir/usr/bin/adb-meowarch"
+
+    # The client's own completion script ships in the AOSP tree and is
+    # command-name specific; install it under our command name.
+    install -Dm644 "$root/../aosp-adbd/packages/modules/adb/adb.bash" \
+        "$pkgdir/usr/share/bash-completion/completions/adb-meowarch"
+}
+

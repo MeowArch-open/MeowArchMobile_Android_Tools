@@ -8,6 +8,10 @@ userland, no soong:
 * [`adbd-standalone/`](adbd-standalone/) — AOSP's **adbd** as a native glibc
   binary for **Arch Linux ARM (aarch64)**: TCP adb plus USB (FunctionFS).
   Runs *on* the device.
+* [`adb-standalone/`](adb-standalone/) — AOSP's host **adb** client
+  (platform-tools' `adb`), built standalone for **x86_64 Linux**: real USB via
+  libusb, TCP/`adb connect`, shell/sync/forward/pairing with brotli/lz4/zstd
+  compression. Runs on the host, talks to real phones.
 * [`better_fastboot/`](better_fastboot/) — AOSP's official host **fastboot**
   tool for **x86_64 Linux** (real `usb_linux` backend, Android-forked
   `mke2fs`/`make_f2fs` for `fastboot -w`) **and Windows** (`fastboot.exe`,
@@ -18,7 +22,7 @@ userland, no soong:
   `flash-x` — flash a partition straight out of an OTA `payload.bin` without
   unpacking it first.
 
-Both compile the genuine AOSP sources in place from a shared partial checkout
+All three compile the genuine AOSP sources in place from a shared partial checkout
 (`../aosp-adbd`, pinned SHAs — see each README's Upstream table).
 
 ## Quick start
@@ -28,6 +32,12 @@ On the device (adbd):
     pacman -U adbd-meowarch-*.pkg.tar.zst
     sudo systemctl enable --now adbd
     adb connect <device>:5555
+
+On the host (adb):
+
+    pacman -U adb-meowarch-*.pkg.tar.zst
+    adb-meowarch devices
+    adb-meowarch -s <serial> shell
 
 On the host (fastboot):
 
@@ -51,6 +61,15 @@ adbd (x86_64 + aarch64 cross):
           -DHOST_PROTOC=$PWD/build-native/protobuf/protoc
     cmake --build build-aarch64 -j$(nproc)
     CARCH=aarch64 makepkg -f
+
+adb (x86_64 Linux):
+
+    cd adb-standalone
+    ./scripts/fetch-aosp.sh         # shares ../aosp-adbd
+    cmake -B build-native -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+    cmake --build build-native -j$(nproc)
+    makepkg -f
+    bash scripts/test-adb.sh        # end-to-end against adbd-standalone
 
 fastboot (x86_64 Linux):
 

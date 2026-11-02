@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - 'adbd-standalone/**'
+      - 'adb-standalone/**'
       - 'better_fastboot/**'
       - '.github/workflows/build.yml'
   pull_request:
     paths:
       - 'adbd-standalone/**'
+      - 'adb-standalone/**'
       - 'better_fastboot/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
@@ -148,6 +150,82 @@ jobs:
         with:
           name: adbd-meowarch-aarch64-pkg
           path: adbd-standalone/adbd-meowarch-*.pkg.tar.zst
+          if-no-files-found: error
+
+  build-adb:
+    # Standalone build of AOSP's host adb *client* (platform-tools' adb).
+    # The end-to-end suite drives it against the adbd daemon built by the
+    # native job — client and daemon come from the same AOSP snapshot, so this
+    # exercises the real protocol rather than a mock.
+    name: adb x86_64 (standalone)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    timeout-minutes: 60
+    steps:
+      - name: Install build deps
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git clang cmake ninja make pkgconf zlib gcc-libs fakeroot curl python \
+            lz4 zstd brotli libusb
+
+      - uses: actions/checkout@v4
+
+      - name: Fetch AOSP sources (pinned; shared with the other jobs' tree)
+        working-directory: adb-standalone
+        run: ./scripts/fetch-aosp.sh
+
+      - name: Configure & build (native)
+        working-directory: adb-standalone
+        run: |
+          cmake -B build-native -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build-native -j"$(nproc)"
+
+      - name: Verify binary
+        working-directory: adb-standalone
+        run: |
+          set -x   # never fail silently
+          ./build-native/adb version | tee /tmp/ver.txt
+          grep -q 'Android Debug Bridge version' /tmp/ver.txt
+          # mDNS is deliberately absent; it must say so rather than pretend.
+          ./build-native/adb mdns check > /tmp/mdns.txt 2>&1
+          grep -q 'unavailable' /tmp/mdns.txt
+          # libusb is a system dependency, so it must be a NEEDED entry
+          # (boringssl/protobuf, by contrast, are statically linked).
+          ldd ./build-native/adb | tee /tmp/ldd.txt
+          grep -q 'libusb-1.0' /tmp/ldd.txt
+          grep -q 'libbrotli' /tmp/ldd.txt
+          if grep -qE 'libssl|libcrypto\.so|libprotobuf\.so' /tmp/ldd.txt; then
+            echo "expected boringssl/protobuf to be static"; exit 1
+          fi
+
+      - name: Build adbd (the suite's peer)
+        working-directory: adbd-standalone
+        run: |
+          cmake -B build-native -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build-native -j"$(nproc)"
+
+      - name: End-to-end suite against adbd
+        working-directory: adb-standalone
+        run: bash scripts/test-adb.sh build-native/adb ../adbd-standalone/build-native/adbd
+
+      - name: Package (makepkg)
+        working-directory: adb-standalone
+        run: |
+          useradd -m builder || true
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder:builder . ../aosp-adbd
+          sudo -u builder bash -c 'makepkg -f'
+          tar --zstd -xOf adb-meowarch-*.pkg.tar.zst .PKGINFO | grep '^arch = x86_64$'
+          tar --zstd -tf adb-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/adb-meowarch'
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: adb-meowarch-x86_64-pkg
+          path: adb-standalone/adb-meowarch-*.pkg.tar.zst
           if-no-files-found: error
 
   build-fastboot:

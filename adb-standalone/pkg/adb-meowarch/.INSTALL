@@ -1,0 +1,13 @@
+# adb-meowarch install hook
+
+post_install() {
+    cat <<'MSG'
+adb-meowarch: run `adb-meowarch` (the distro's `adb` from android-tools is
+  left untouched, so both can be installed side by side).
+  mDNS discovery (adb connect by service name / wireless pairing discovery) is
+  not built in: use `adb-meowarch connect IP:PORT` with the address from the
+  device's wireless-debugging screen instead.
+  USB works like platform-tools; if `adb-meowarch devices` is empty but lsusb
+  sees the phone, install udev rules (AUR: android-udev) or run as root.
+MSG
+}
