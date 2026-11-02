@@ -348,10 +348,24 @@ jobs:
           ./fastboot.exe --version > version.txt 2>&1
           strip_cr < version.txt | grep -q 'fastboot version'
 
-          # help: first 100 lines byte-identical to upstream (CRLF-normalized).
+          # help: upstream's 100 lines byte-identical (CRLF-normalized). Our
+          # flash-x command renders inside upstream's "flashing:" section, so it
+          # is filtered out first — only that entry (its line plus the 28-space
+          # continuation lines under it), never an upstream line. Same filter as
+          # scripts/test-ux.sh; keep the two in step.
           ./fastboot.exe --help > help.txt 2>/dev/null
-          strip_cr < help.txt | sed -n '1,100p' > help100.txt
+          strip_flashx() {
+            awk 'skip && /^ {28}/ { next } { skip = 0 }
+                 /^ flash-x[ ]/ { skip = 1; next }
+                 { print }'
+          }
+          strip_cr < help.txt | strip_flashx | sed -n '1,100p' > help100.txt
           diff help100.txt help-baseline-en.txt
+          # ...and it must actually be in the flashing section, which the diff
+          # above deliberately does not check.
+          strip_cr < help.txt | grep -n '^ flash-x' | cut -d: -f1 > fx.line
+          strip_cr < help.txt | grep -n '^basics:' | cut -d: -f1 > basics.line
+          test "$(cat fx.line)" -lt "$(cat basics.line)"
 
           # Did-you-want across languages (these exit 1 by design).
           ./fastboot.exe flass > flass.txt 2>&1 || true
