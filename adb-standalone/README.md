@@ -53,6 +53,18 @@ aligned. `adb help <section>` prints one group and `adb help --list-sections`
 lists the keywords; both accept the English keyword and the translated section
 name.
 
+**Errors are coloured and localized too**: the `adb:` prefix is red on a
+terminal (one funnel, `error_exit_va`, so `error_exit`, `perror_exit` and the
+syntax errors all get it), and the message text comes from the active
+language's table. adb builds its errors as format strings, but the ones users
+actually see arrive already formatted — `device 'x' not found` is assembled in
+`transport.cpp` — so `adbi18n::TranslateError` matches the English text with
+each printf specifier as a wildcard and substitutes the captured values into
+the translation. Covered today: device not found / offline / no devices / more
+than one device / unauthorized (including its multi-line body) / closed /
+unknown command / daemon start and connect failures / version mismatch /
+install-mode messages. Anything without an entry prints exactly as before.
+
 **Four languages**: en, zh_CN, zh_TW, ja for the help body, the progress-bar
 labels and our error strings (`--lang=`, `--list-langs`, or the usual `LANG` /
 `LC_ALL` / `LANGUAGE`). Flag descriptions and the environment-variable list stay
