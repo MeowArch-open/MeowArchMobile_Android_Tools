@@ -80,7 +80,8 @@ message(STATUS "AOSP tree: ${AOSP_ROOT}")
 #        transport entry point the stub provides. Field-for-field identical, so
 #        nothing else has to change.
 foreach(_patch
-        0001-adb-host-ux.patch)
+        0001-fdevent.h-include-vector-explicitly.patch
+        0002-adb-host-ux.patch)
     execute_process(
         COMMAND patch -N -s -d "${ADB}" -p1 -i
                 "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"

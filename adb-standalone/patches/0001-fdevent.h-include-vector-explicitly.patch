@@ -1,0 +1,17 @@
+From: MeowArchMobile adbd standalone build
+Subject: [PATCH] fdevent.h: include <vector> explicitly
+
+fdevent.h uses std::vector but never includes it; upstream relies on a
+transitive include that differs between standard library versions
+(libstdc++ vs libc++, and across versions). Add the include directly.
+
+--- a/fdevent/fdevent.h
++++ b/fdevent/fdevent.h
+@@ -30,6 +30,7 @@
+ #include <mutex>
+ #include <optional>
+ #include <set>
++#include <vector>
+ #include <variant>
+ 
+ #include <android-base/thread_annotations.h>
