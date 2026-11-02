@@ -165,9 +165,13 @@ jobs:
     steps:
       - name: Install build deps
         run: |
+          # libc++/libc++abi are required, not optional: adb's types.h
+          # static_asserts that Block is standard-layout and libstdc++'s
+          # unique_ptr is not. Without them protobuf's own sources fail with
+          # "'atomic' file not found" — a misleading error that cost a CI run.
           pacman -Syu --noconfirm --needed \
-            git clang cmake ninja make pkgconf zlib gcc-libs fakeroot curl python \
-            lz4 zstd brotli libusb
+            git clang cmake ninja make pkgconf zlib gcc-libs libc++ libc++abi \
+            fakeroot curl python lz4 zstd brotli libusb
 
       - uses: actions/checkout@v4
 
