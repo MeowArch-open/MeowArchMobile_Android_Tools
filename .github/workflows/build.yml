@@ -171,7 +171,7 @@ jobs:
           # "'atomic' file not found" — a misleading error that cost a CI run.
           pacman -Syu --noconfirm --needed \
             git clang cmake ninja make pkgconf zlib gcc-libs libc++ libc++abi \
-            fakeroot curl python lz4 zstd brotli libusb
+            fakeroot curl python lz4 zstd brotli libusb systemd-libs
 
       - uses: actions/checkout@v4
 
@@ -218,6 +218,11 @@ jobs:
       - name: Package (makepkg)
         working-directory: adb-standalone
         run: |
+          # Every runtime dependency must resolve to a real package name.
+          # "liblz4" is the pkg-config module, not the package (that is "lz4");
+          # a mismatch here fails makepkg with "Could not resolve all
+          # dependencies", which is exactly what one CI run hit.
+          pacman -T glibc gcc-libs libc++ libc++abi zlib lz4 zstd brotli libusb systemd-libs
           useradd -m builder || true
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
           chown -R builder:builder . ../aosp-adbd

@@ -20,7 +20,7 @@ pkgdesc="AOSP host adb client (platform-tools adb), built standalone against Arc
 arch=('x86_64')
 url="https://android.googlesource.com/platform/packages/modules/adb/"
 license=('Apache')
-depends=('glibc' 'gcc-libs' 'libc++' 'libc++abi' 'zlib' 'liblz4' 'zstd'
+depends=('glibc' 'gcc-libs' 'libc++' 'libc++abi' 'zlib' 'lz4' 'zstd'
          'brotli' 'libusb' 'systemd-libs')
 makedepends=('cmake' 'clang' 'ninja' 'pkgconf' 'git')
 optdepends=('android-udev: udev rules so adb sees phones without root')
