@@ -120,6 +120,23 @@ const LangInfo* LangTable(size_t* count);
 
 void RegisterLang(const char* code, const char* native, const MsgEntry* table, size_t count);
 
+// Runtime error strings.
+//
+// adb's ~150 error_exit()/perror_exit() call sites each pass a literal format
+// string, so translating them would mean editing every one. Instead the single
+// funnel (error_exit_va in client/adb_client.cpp) looks the format up here by
+// exact match and prints the active language's text if there is one, otherwise
+// the original English. Format specifiers (%s, %d) are preserved, so the
+// vfprintf arguments still line up.
+//
+// TranslateError: same job for a message that has ALREADY been formatted (the
+// device-not-found text, say, comes out of transport.cpp as a finished string,
+// not a format+args pair). The English text is matched against the table with
+// each specifier acting as a wildcard, the captured values are substituted into
+// the target language, and "" is returned when nothing matches — callers then
+// print the original.
+std::string TranslateError(const std::string& text);
+
 }  // namespace adbi18n
 
 inline const char* _(adbi18n::Msg id) { return adbi18n::T(id); }

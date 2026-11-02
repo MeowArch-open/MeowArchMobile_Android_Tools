@@ -15,7 +15,7 @@
 
 pkgname=adb-meowarch
 pkgver=36.0.0
-pkgrel=1
+pkgrel=2
 pkgdesc="AOSP host adb client (platform-tools adb), built standalone against Arch's libusb"
 arch=('x86_64')
 url="https://android.googlesource.com/platform/packages/modules/adb/"

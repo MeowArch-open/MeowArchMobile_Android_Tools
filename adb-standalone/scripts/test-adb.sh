@@ -57,6 +57,22 @@ esac
 if "$ADB" help networking 2>&1 | grep -q 'connect HOST'; then ok "help <section>"; else bad "help <section>"; fi
 "$ADB" help nosuchsection >/dev/null 2>&1; [ $? -ne 0 ] && ok "unknown section exits 1" || bad "unknown section rc"
 
+# Error strings are localized too. The device-not-found text is built inside
+# transport.cpp and reaches error_exit already formatted, so this also covers
+# the pattern-matching path (specifier as wildcard) rather than a plain format
+# lookup.
+"$ADB" kill-server >/dev/null 2>&1; sleep 0.3
+for L in en_US.UTF-8:not\ found zh_CN.UTF-8:未找到 zh_TW.UTF-8:找不到 ja_JP.UTF-8:見つかりません; do
+    lang="${L%%:*}"; want="${L#*:}"
+    OUT="$(LANG="$lang" "$ADB" -s no-such-device shell 2>&1 | tail -1)"
+    case "$OUT" in
+        *"$want"*) ok "error text in $lang" ;;
+        *) bad "error text in $lang: $OUT" ;;
+    esac
+done
+# Localized errors are still plain text on a pipe (no colour, no mangling).
+case "$OUT" in *$'\033'*) bad "escape bytes in piped error" ;; *) ok "piped error has no escapes" ;; esac
+
 # Language selection: --lang beats the environment, and every shipped language
 # renders a header (no blank/garbled output).
 for L in en zh_CN zh_TW ja; do

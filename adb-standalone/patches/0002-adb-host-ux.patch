@@ -64,6 +64,47 @@ index e2da4b5..1c15c72 100644
  struct MdnsInfo {
      std::string service_name;
      std::string service_type;
+diff --git a/client/adb_client.cpp b/client/adb_client.cpp
+index 6b20151..c1bd2dd 100644
+--- a/client/adb_client.cpp
++++ b/client/adb_client.cpp
+@@ -16,6 +16,8 @@
+ 
+ #define TRACE_TAG ADB
+ 
++#include "adb_i18n.h"
++#include "fb_color.h"
+ #include "sysdeps.h"
+ #include "adb_client.h"
+ 
+@@ -449,9 +451,24 @@ const std::optional<FeatureSet>& adb_get_feature_set(std::string* error) {
+ 
+ [[noreturn]] static void error_exit_va(int error, const char* fmt, va_list va) {
+     fflush(stdout);
+-    fprintf(stderr, "%s: ", android::base::Basename(android::base::GetExecutablePath()).c_str());
+-
+-    vfprintf(stderr, fmt, va);
++    // MeowArchMobile: every error path funnels through here (error_exit,
++    // perror_exit, syntax errors), so this one place colours the prefix red.
++    // The text is unchanged — only the SGR bytes are added, and only when
++    // stderr is a terminal, so piped output stays byte-identical.
++    fprintf(stderr, "%s: ",
++            fbcolor::Paint(fbcolor::C::Red,
++                           android::base::Basename(android::base::GetExecutablePath()))
++                    .c_str());
++
++    // MeowArchMobile: format first, then translate. Errors are passed to
++    // error_exit as a format+args pair, but the strings that reach the user
++    // ("device 'x' not found") are built earlier in transport.cpp, so the
++    // lookup has to work on finished text. Anything without a translation is
++    // printed exactly as before.
++    char buf[2048];
++    vsnprintf(buf, sizeof(buf), fmt, va);
++    std::string localized = adbi18n::TranslateError(buf);
++    fputs(localized.empty() ? buf : localized.c_str(), stderr);
+ 
+     if (error != 0) {
+         fprintf(stderr, ": %s", strerror(error));
 diff --git a/client/commandline.cpp b/client/commandline.cpp
 index 5cd3ab6..0ed6817 100644
 --- a/client/commandline.cpp
