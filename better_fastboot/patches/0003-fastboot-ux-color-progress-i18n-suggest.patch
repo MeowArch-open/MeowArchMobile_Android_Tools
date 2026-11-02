@@ -377,7 +377,7 @@ index 1c52da2..f30497a 100644
      return fsOptions;
  }
 diff --git a/fastboot/fastboot_driver.cpp b/fastboot/fastboot_driver.cpp
-index e5ef66b..bd7031f 100644
+index e5ef66b..3db5296 100644
 --- a/fastboot/fastboot_driver.cpp
 +++ b/fastboot/fastboot_driver.cpp
 @@ -50,6 +50,7 @@
@@ -572,49 +572,58 @@ index e5ef66b..bd7031f 100644
      std::string cmd = FB_CMD_FETCH ":" + partition;
      if (offset >= 0) {
          cmd += android::base::StringPrintf(":0x%08" PRIx64, offset);
-@@ -535,6 +557,13 @@ RetCode FastBootDriver::SendBuffer(android::base::borrowed_fd fd, size_t size) {
+@@ -535,6 +557,9 @@ RetCode FastBootDriver::SendBuffer(android::base::borrowed_fd fd, size_t size) {
      uint32_t remaining = size;
      RetCode ret;
  
-+    // MeowArchMobile: send the mapping in 1 MiB pieces instead of one giant
-+    // transport write, so the progress callback advances during the transfer
-+    // (the sparse path already chunks at TRANSPORT_CHUNK_SIZE; multi-message
-+    // sends are protocol-transparent — the device consumes exactly |size|
-+    // bytes after DATA regardless of how they are framed).
-+    static constexpr uint32_t PROGRESS_CHUNK_SIZE = 1024 * 1024;
++    // MeowArchMobile: progress chunking lives in SendBuffer(buf, size) so it
++    // covers every caller (file mapping, sparse extents, resume buffers).
 +
      while (remaining) {
          // Memory map the file
          size_t len = std::min(remaining, MAX_MAP_SIZE);
-@@ -544,8 +573,15 @@ RetCode FastBootDriver::SendBuffer(android::base::borrowed_fd fd, size_t size) {
-             return IO_ERROR;
-         }
+@@ -565,16 +590,33 @@ RetCode FastBootDriver::SendBuffer(const void* buf, size_t size) {
+     if (!size) {
+         return BAD_ARG;
+     }
+-    // Write the buffer
+-    ssize_t tmp = transport_->Write(buf, size);
  
--        if ((ret = SendBuffer(mapping->data(), mapping->size()))) {
--            return ret;
-+        const char* data = static_cast<const char*>(mapping->data());
-+        size_t map_remaining = mapping->size();
-+        while (map_remaining) {
-+            size_t chunk = std::min<size_t>(map_remaining, PROGRESS_CHUNK_SIZE);
-+            if ((ret = SendBuffer(data, chunk))) {
-+                return ret;
-+            }
-+            data += chunk;
-+            map_remaining -= chunk;
-         }
+-    if (tmp < 0) {
+-        error_ = ErrnoStr("Write to device failed in SendBuffer()");
+-        return IO_ERROR;
+-    } else if (static_cast<size_t>(tmp) != size) {
+-        error_ = android::base::StringPrintf("Failed to write all %zu bytes", size);
++    // MeowArchMobile: give the transport at most PROGRESS_CHUNK_SIZE at a time.
++    // libsparse hands this function whole extents, so a super image arrives as
++    // one multi-hundred-megabyte call; the progress callback only fires when a
++    // write returns, which made the bar sit still for seconds and then jump.
++    // Chunking is protocol-transparent: the device consumes exactly |size|
++    // bytes after DATA regardless of how they are framed.
++    static constexpr size_t PROGRESS_CHUNK_SIZE = 1024 * 1024;
++    const char* cursor = static_cast<const char*>(buf);
++    size_t left = size;
++    while (left) {
++        size_t chunk = std::min(left, PROGRESS_CHUNK_SIZE);
++        ssize_t tmp = transport_->Write(cursor, chunk);
++
++        if (tmp < 0) {
++            error_ = ErrnoStr("Write to device failed in SendBuffer()");
++            return IO_ERROR;
++        } else if (static_cast<size_t>(tmp) != chunk) {
++            error_ = android::base::StringPrintf("Failed to write all %zu bytes", chunk);
++            return IO_ERROR;
++        }
  
-         remaining -= len;
-@@ -577,6 +613,10 @@ RetCode FastBootDriver::SendBuffer(const void* buf, size_t size) {
-         return IO_ERROR;
+-        return IO_ERROR;
++        cursor += chunk;
++        left -= chunk;
++
++        xfer_done_ += chunk;
++        if (progress_) progress_(xfer_done_, xfer_total_);
      }
  
-+    // MeowArchMobile: advance the live progress counter.
-+    xfer_done_ += size;
-+    if (progress_) progress_(xfer_done_, xfer_total_);
-+
      return SUCCESS;
- }
- 
 diff --git a/fastboot/fastboot_driver.h b/fastboot/fastboot_driver.h
 index 49cebd9..7b7aead 100644
 --- a/fastboot/fastboot_driver.h

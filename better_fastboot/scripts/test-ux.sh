@@ -136,6 +136,21 @@ else
   fi
 fi
 
+# Regression: a super image reaches the driver as a few hundred-megabyte raw
+# chunks (libsparse hands one callback per chunk). When those became single
+# transport writes, the bar froze for the whole chunk and then jumped — big
+# partitions looked stuck while small ones looked smooth. Self-contained: it
+# runs its own mock device over a pty.
+if command -v python3 >/dev/null 2>&1; then
+  SPX="$(python3 "$HERE/tests/test_sparse_progress.py" "$FB" 2>&1 | tail -1)"
+  case "$SPX" in
+    *PASS*) ok "progress stays live through one huge sparse chunk (no freeze/jump)" ;;
+    *)      bad "sparse progress: $SPX" ;;
+  esac
+else
+  skip "python3 unavailable (sparse-progress regression)"
+fi
+
 echo "== 5. shell completions (bash/zsh/fish) =="
 for SH in bash zsh fish; do
   OUT="$(LANG=en_US.UTF-8 "$FB" --shell-completion=$SH 2>/dev/null)"

@@ -99,6 +99,11 @@ dist — the package installs them side by side (see PKGBUILD for the
     scripts/test-ux-wine.sh
                           the same checks against fastboot.exe under wine
     tests/mock_device.py  the mock device (FB01 framing, throttled ingest)
+    tests/make_sparse.py  builds one-chunk sparse images for the progress test
+    tests/test_sparse_progress.py
+                          flashes a huge sparse chunk over a pty and fails if
+                          any bar frame is more than 1.5s late (the super/
+                          big-partition freeze-and-jump regression)
     tests/help-baseline-en.txt
                           upstream `fastboot --help` (first 100 lines), captured
                           from the distro platform-tools build — the byte-parity
@@ -240,6 +245,19 @@ dropped in a fixed order — ETA, then the byte counters, then everything but
 the percentage — and finally the prolog itself is shortened with an ellipsis.
 Bar and field widths are budgeted rather than measured per frame, so the line
 does not jitter as the speed text changes length.
+
+Updates stay smooth on big partitions too. A `flash super super.img` reaches
+the driver as a handful of multi-hundred-megabyte raw chunks (libsparse hands
+one callback per chunk), and those used to become single transport writes —
+the callback only fires when a write *returns*, so the bar sat frozen for the
+whole chunk (seconds at USB speed) and then jumped straight to 30-40%. Every
+transport write is now split at 1 MiB in `SendBuffer(buf, size)`, which covers
+all callers at once: file mappings, sparse extents and resume buffers. The
+split is protocol-transparent — the device consumes exactly the bytes DATA
+announced regardless of how they are framed, and the USB backend already
+submitted ≤256 KiB URBs internally. `tests/test_sparse_progress.py` builds a
+one-chunk sparse image and asserts no gap between frames exceeds 1.5s
+(pre-fix it is ~5s on the 76 MiB chunk it uses).
 
 Windows: `ENABLE_VIRTUAL_TERMINAL_PROCESSING` is switched on for the console
 handle at startup (Windows Terminal and conhost both leave it off, so `\r`
