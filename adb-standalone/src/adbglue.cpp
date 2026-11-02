@@ -81,9 +81,14 @@ int ListLangs() {
     return 0;
 }
 
-int ShowHelp(const std::string& version) { return adbhelp::ShowHelp(version.c_str()); }
+int ShowHelp(const std::string& version) {
+    // Help goes to stdout, so colour has to follow stdout's terminal state.
+    fbcolor::InitForStdout();
+    return adbhelp::ShowHelp(version.c_str());
+}
 
 int ShowHelpSection(const std::string& version, const char* section) {
+    fbcolor::InitForStdout();
     return adbhelp::ShowSection(version.c_str(), section);
 }
 

@@ -38,6 +38,11 @@ enum class C {
 // Call once from main() before any output. Detects the environment.
 void Init();
 
+// Call from a command whose output goes to STDOUT rather than stderr (adb
+// help): re-decides the escape/colour state from stdout's console, so
+// `adb help 2>log` stays coloured while `adb help | less` does not.
+void InitForStdout();
+
 // Explicit overrides (--no-color / --color).
 void SetEnabled(bool enabled);
 bool Enabled();

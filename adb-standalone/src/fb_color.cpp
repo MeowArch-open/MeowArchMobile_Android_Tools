@@ -26,9 +26,12 @@ bool g_escapes_ok = false;  // stderr interprets ANSI sequences (see EscapesOk)
 // which _isatty() happily reports as a terminal — and colours then leak into
 // piped output (caught by the windows-latest CI parity test). GetConsoleMode
 // is the accurate test: it succeeds only for an actual console screen buffer.
-bool StderrIsTerminal() {
+// |fd| chooses the stream whose console state matters: STDERR for the progress
+// bar and error colouring, STDOUT for `adb help` (its text goes to stdout, so
+// `adb help 2>log` must stay coloured).
+bool StreamIsTerminal(int fd) {
 #ifdef _WIN32
-    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    HANDLE h = GetStdHandle(fd == STDOUT_FILENO ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
     DWORD mode = 0;
     if (h == NULL || h == INVALID_HANDLE_VALUE) return false;
     if (!GetConsoleMode(h, &mode)) return false;
@@ -46,9 +49,11 @@ bool StderrIsTerminal() {
     }
     return true;
 #else
-    return isatty(STDERR_FILENO) == 1;
+    return isatty(fd) == 1;
 #endif
 }
+
+bool StderrIsTerminal() { return StreamIsTerminal(STDERR_FILENO); }
 
 bool TermAllowsEscapes() {
     const char* term = getenv("TERM");
@@ -92,6 +97,16 @@ void Init() {
         const char* no_color = getenv("NO_COLOR");
         g_enabled = !(no_color && no_color[0] != '\0');
     }
+}
+
+void InitForStdout() {
+    g_escapes_ok = StreamIsTerminal(STDOUT_FILENO);
+    if (g_forced) {
+        const char* no_color = getenv("NO_COLOR");
+        g_enabled = !(no_color && no_color[0] != '\0');
+        return;
+    }
+    g_enabled = Detect();
 }
 
 void SetEnabled(bool enabled) {
