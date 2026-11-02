@@ -11,7 +11,9 @@ userland, no soong:
 * [`adb-standalone/`](adb-standalone/) — AOSP's host **adb** client
   (platform-tools' `adb`), built standalone for **x86_64 Linux**: real USB via
   libusb, TCP/`adb connect`, shell/sync/forward/pairing with brotli/lz4/zstd
-  compression. Runs on the host, talks to real phones.
+  compression. Runs on the host, talks to real phones. Plus UX additions:
+  coloured `adb devices`, a push/pull progress bar with speed, categorised
+  `adb help [section]`, and four languages (en/zh_CN/zh_TW/ja).
 * [`better_fastboot/`](better_fastboot/) — AOSP's official host **fastboot**
   tool for **x86_64 Linux** (real `usb_linux` backend, Android-forked
   `mke2fs`/`make_f2fs` for `fastboot -w`) **and Windows** (`fastboot.exe`,

@@ -33,17 +33,37 @@ cleanup() {
 echo "== 1. CLI surface (no device) =="
 V="$("$ADB" version 2>&1 | head -2 | tr '\n' ' ')"
 case "$V" in *"Android Debug Bridge version"*"meowarch-adb"*) ok "version: $V" ;; *) bad "version: $V" ;; esac
-# The subcommands the standalone build is expected to keep. Anything missing
-# here means a source file stopped being compiled.
-for c in devices connect disconnect pair forward reverse push pull install uninstall \
-         shell emu logcat bugreport jdwp root remount wait-for get-state get-serialno; do
-    if "$ADB" help 2>&1 | grep -qE "^ +$c\b" || "$ADB" help 2>&1 | grep -qE "\b$c\b"; then
-        :
-    else
-        bad "help lost the '$c' subcommand"
-    fi
+# Help coverage: every command upstream documents must still be listed. Checked
+# in English (--lang=en) so a translation cannot mask a missing entry. The
+# expected list is upstream's own; platform-tools' adb is the reference when it
+# is installed, otherwise a fixed list.
+EXPECTED="devices connect disconnect pair forward reverse push pull install uninstall
+shell emu logcat bugreport jdwp root unroot remount wait-for get-state get-serialno
+get-devpath kill-server start-server tcpip reboot sideload mdns keygen
+enable-verity disable-verity install-multiple install-multi-package reconnect attach detach usb"
+HELP="$("$ADB" --lang=en help 2>&1)"
+MISSING=""
+for c in $EXPECTED; do
+    printf '%s\n' "$HELP" | grep -qE "(^| )$c([ \\[]|$)" || MISSING="$MISSING $c"
 done
-ok "help still lists the expected subcommands"
+if [ -z "$MISSING" ]; then ok "help lists every documented command"; else bad "help missing:$MISSING"; fi
+
+# Categorised help: sections addressable individually, and the list is printed.
+SECTIONS="$("$ADB" help --list-sections 2>&1)"
+case "$SECTIONS" in
+    *networking*scripting*environment*) ok "help --list-sections" ;;
+    *) bad "help --list-sections: $SECTIONS" ;;
+esac
+if "$ADB" help networking 2>&1 | grep -q 'connect HOST'; then ok "help <section>"; else bad "help <section>"; fi
+"$ADB" help nosuchsection >/dev/null 2>&1; [ $? -ne 0 ] && ok "unknown section exits 1" || bad "unknown section rc"
+
+# Language selection: --lang beats the environment, and every shipped language
+# renders a header (no blank/garbled output).
+for L in en zh_CN zh_TW ja; do
+    H="$("$ADB" --lang="$L" help 2>&1 | head -1)"
+    [ -n "$H" ] && ok "help renders in $L" || bad "help blank for $L"
+done
+"$ADB" --list-langs 2>&1 | grep -q zh_TW && ok "--list-langs lists zh_TW" || bad "--list-langs"
 # mDNS is deliberately absent; it must say so rather than pretend.
 M="$("$ADB" mdns check 2>&1)"
 case "$M" in *unavailable*) ok "mdns check reports the backend is absent" ;; *) bad "mdns check: $M" ;; esac
@@ -85,6 +105,23 @@ else
     # forwarding
     if "$ADB" -s "$SER" forward tcp:0 tcp:1 >/dev/null 2>&1; then ok "forward allocation"; else bad "forward"; fi
     "$ADB" -s "$SER" forward --remove-all >/dev/null 2>&1
+
+    # Push/pull progress bar: on a pty it must paint percentage frames; on a
+    # pipe it must stay byte-identical to upstream (no bar at all).
+    head -c 8000000 /dev/urandom > "$TMP/bar.bin"
+    script -q -c "$ADB -s $SER push $TMP/bar.bin /tmp/adb-test-bar.bin" "$TMP/pty.txt" >/dev/null 2>&1
+    BAR_FRAMES="$(tr '\r' '\n' < "$TMP/pty.txt" | grep -acE '\[[#>-]+\]')"
+    if [ "${BAR_FRAMES:-0}" -ge 2 ]; then ok "push progress bar repaints ($BAR_FRAMES frames on a pty)"
+    else bad "push progress bar: $BAR_FRAMES frames"; fi
+    QUIET="$("$ADB" -s "$SER" push "$TMP/bar.bin" /tmp/adb-test-bar.bin 2>&1)"
+    case "$QUIET" in
+        *$'\r'*|*'[#'*) bad "progress leaked into piped output" ;;
+        *) ok "no progress bar when stderr is a pipe" ;;
+    esac
+    # NO_PROGRESS / --no-progress turn it off on a tty too.
+    script -q -c "NO_PROGRESS=1 $ADB -s $SER push $TMP/bar.bin /tmp/adb-test-bar.bin" "$TMP/pty2.txt" >/dev/null 2>&1
+    NP="$(tr '\r' '\n' < "$TMP/pty2.txt" | grep -acE '\[[#>-]+\]')"
+    [ "${NP:-0}" -eq 0 ] && ok "NO_PROGRESS suppresses the bar" || bad "NO_PROGRESS left $NP frames"
 
     # server-status protobuf (goes through protobuf TextFormat)
     ST="$("$ADB" -s "$SER" server-status 2>&1)"

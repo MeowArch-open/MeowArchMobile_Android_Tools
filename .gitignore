@@ -24,3 +24,5 @@ a.out
 # Python caches (tests/ scripts import each other)
 __pycache__/
 *.pyc
+adb-standalone/build-*/
+adb-standalone/pkg/

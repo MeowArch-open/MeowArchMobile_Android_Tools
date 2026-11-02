@@ -13,7 +13,7 @@
 #     separate prebuilt libraries from the chromium.googlesource.com/openscreen
 #     checkout and external/mdnsresponder; neither is part of the AOSP tree
 #     this project pins, and openscreen is not fetchable as an AOSP component.
-#     Instead `patches/0001-adb-host-no-openscreen-mdns.patch` compiles zero of the mDNS
+#     Instead `patches/0001-adb-host-ux.patch` compiles zero of the mDNS
 #     sources, and the client falls back to `adb connect ip:port` /
 #     `tcp:<ip>` discovery, which is what the transport layer already does
 #     when mDNS is unavailable (ADB_MDNS=0 behaves identically upstream).
@@ -80,7 +80,7 @@ message(STATUS "AOSP tree: ${AOSP_ROOT}")
 #        transport entry point the stub provides. Field-for-field identical, so
 #        nothing else has to change.
 foreach(_patch
-        0001-adb-host-no-openscreen-mdns.patch)
+        0001-adb-host-ux.patch)
     execute_process(
         COMMAND patch -N -s -d "${ADB}" -p1 -i
                 "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"
@@ -110,6 +110,27 @@ target_link_libraries(meowarch_shim PUBLIC adb_protos base_static)
 # adb_mdns.h only declares the host-side API (MdnsInfo, the connect helpers,
 # what main.cpp and socket_spec.cpp call) under #if ADB_HOST.
 target_compile_definitions(meowarch_shim PUBLIC ADB_HOST=1 _GNU_SOURCE)
+
+# --------------------------------------------------------- MeowArchMobile UX
+# Colors, the push/pull progress bar, the message catalog and the categorised
+# help renderer. Same layout as better_fastboot's glue library: everything the
+# AOSP tree is patched to call lives here, so the patch stays a one-line hook.
+add_library(adb_glue STATIC
+    src/fb_color.cpp
+    src/adb_progress.cpp
+    src/adb_i18n.cpp
+    src/adb_i18n_en.cpp
+    src/adb_i18n_zh_cn.cpp
+    src/adb_i18n_zh_tw.cpp
+    src/adb_i18n_ja.cpp
+    src/adb_help.cpp
+    src/adbglue.cpp
+)
+target_include_directories(adb_glue PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(adb_glue PUBLIC base_static)
+target_compile_options(adb_glue PRIVATE -Wall -Wextra -Wformat=2)
+target_compile_options(adb_glue PRIVATE
+    $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:GNU>>:-Werror=format -Wno-format-nonliteral>)
 
 # ------------------------------------------------------------ boringssl
 set(BSSL_SRC "${BSSL}/src")
@@ -428,6 +449,7 @@ target_compile_definitions(adb_core PUBLIC
     IOV_MAX=__IOV_MAX
 )
 target_link_libraries(adb_core PUBLIC
+    adb_glue
     adb_protos
     adb_sysdeps
     base_static

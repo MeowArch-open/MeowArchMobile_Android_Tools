@@ -1,0 +1,274 @@
+diff --git a/adb.cpp b/adb.cpp
+index a240676..7442ea9 100644
+--- a/adb.cpp
++++ b/adb.cpp
+@@ -1360,7 +1360,10 @@ HostRequestResult handle_host_request(std::string_view service, TransportType ty
+         }
+         status.set_usb_backend_forced(getenv("ADB_LIBUSB") != nullptr);
+ 
+-        if (using_bonjour()) {
++        if (!mdns_backend_available()) {
++            // MeowArchMobile: no mDNS backend compiled in (see adb_mdns.h).
++            status.set_mdns_backend(adb::proto::AdbServerStatus::UNKNOWN_MDNS);
++        } else if (using_bonjour()) {
+             status.set_mdns_backend(adb::proto::AdbServerStatus::BONJOUR);
+         } else {
+             status.set_mdns_backend(adb::proto::AdbServerStatus::OPENSCREEN);
+diff --git a/adb_mdns.h b/adb_mdns.h
+index e2da4b5..1c15c72 100644
+--- a/adb_mdns.h
++++ b/adb_mdns.h
+@@ -48,7 +48,24 @@ extern const char* _Nonnull kADBDNSServices[kNumADBDNSServices];
+ extern const char* _Nonnull kADBDNSServiceTxtRecords[kNumADBDNSServices];
+ 
+ #if ADB_HOST
+-#include "client/openscreen/mdns_service_info.h"
++// MeowArchMobile: openscreen is not part of the AOSP tree the standalone build
++// pins (it lives in chromium.googlesource.com/openscreen, not AOSP), so
++// ServiceInfo is declared here instead of coming from
++// client/openscreen/mdns_service_info.h. Field-for-field the same record, with
++// string addresses instead of openscreen::IPAddress — its only consumers are
++// the two mDNS backends, which a standalone host build leaves out.
++namespace mdns {
++struct ServiceInfo {
++    std::string instance_name;
++    std::string service_name;
++    std::string v4_address;
++    std::string v6_address;
++    uint16_t port = 0;
++
++    std::string v4_address_string() const { return v4_address; }
++    std::string v6_address_string() const { return v6_address; }
++};
++}  // namespace mdns
+ // ADB Secure DNS service interface. Used to query what ADB Secure DNS services have been
+ // resolved, and to run some kind of callback for each one.
+ using adb_secure_foreach_service_callback = std::function<void(const mdns::ServiceInfo& si)>;
+@@ -68,6 +85,19 @@ void mdns_cleanup();
+ std::string mdns_check();
+ std::string mdns_list_discovered_services();
+ 
++// MeowArchMobile: the mDNS backends (openscreen + mDNSResponder) are not built
++// here, so transport_mdns.cpp/mdnsresponder_client.cpp are out and these are
++// provided by shim/mdns_stub.cpp instead. Declaring the transport entry point
++// here keeps the rest of adb (main.cpp calls it when mDNS is enabled) linking
++// unchanged; the stub is a no-op and mdns::is_enabled() reports false.
++void init_mdns_transport_discovery();
++
++// MeowArchMobile: true when an mDNS discovery backend is compiled in. The
++// standalone build has none (openscreen and mDNSResponder are out of tree), so
++// `adb server-status` reports UNKNOWN_MDNS instead of naming a backend that is
++// not there.
++bool mdns_backend_available();
++
+ struct MdnsInfo {
+     std::string service_name;
+     std::string service_type;
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+index 5cd3ab6..0ed6817 100644
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -65,6 +65,8 @@
+ #include "bugreport.h"
+ #include "client/file_sync_client.h"
+ #include "commandline.h"
++#include "adbglue.h"
++#include "fb_color.h"
+ #include "fastdeploy.h"
+ #include "incremental_server.h"
+ #include "services.h"
+@@ -85,6 +87,19 @@ static std::string product_file(const std::string& file) {
+ static constexpr int kDefaultServerPort = 5037;
+ 
+ static void help() {
++    // MeowArchMobile: the categorised, colored, localized renderer (see
++    // adb_help.cpp). It reproduces this text section by section and adds
++    // `adb help <section>` / `adb help --list-sections`.
++    {
++        std::string v = adb_version();
++        size_t nl = v.find('\n');
++        std::string first = nl == std::string::npos ? v : v.substr(0, nl);
++        const std::string prefix = "Android Debug Bridge version ";
++        if (first.rfind(prefix, 0) == 0) first = first.substr(prefix.size());
++        adbglue::ShowHelp(first);
++    }
++    return;
++    // ---- everything below is upstream's flat text, kept for reference -----
+     fprintf(stdout, "%s\n", adb_version().c_str());
+     // clang-format off
+     fprintf(stdout,
+@@ -1496,6 +1511,45 @@ static int process_remount_or_verity_service(const int argc, const char** argv)
+     }
+ }
+ 
++// MeowArchMobile: `adb devices` with colour. State words map to a colour:
++// device -> green, unauthorized/offline -> yellow, anything else -> dim.
++static int adb_devices_command(const std::string& command) {
++    std::string result;
++    std::string error;
++    if (!adb_query(command, &result, &error)) {
++        fprintf(stderr, "%s%s\n", fbcolor::Paint(fbcolor::C::Red, "error: ").c_str(),
++                error.c_str());
++        return 1;
++    }
++    size_t start = 0;
++    while (start < result.size()) {
++        size_t nl = result.find('\n', start);
++        std::string line = result.substr(start, nl == std::string::npos ? std::string::npos
++                                                                      : nl - start);
++        size_t tab = line.find('\t');
++        if (tab == std::string::npos) {
++            printf("%s\n", line.c_str());
++        } else {
++            std::string serial = line.substr(0, tab);
++            std::string rest = line.substr(tab + 1);
++            size_t sp = rest.find(' ');
++            std::string state = rest.substr(0, sp);
++            std::string tail = sp == std::string::npos ? "" : rest.substr(sp);
++            fbcolor::C c = fbcolor::C::Dim;
++            if (state == "device") c = fbcolor::C::Green;
++            else if (state == "unauthorized" || state == "offline" || state == "recovery" ||
++                     state == "sideload" || state == "bootloader")
++                c = fbcolor::C::Yellow;
++            printf("%s\t%s%s%s%s\n", serial.c_str(),
++                   fbcolor::Code(c), state.c_str(), fbcolor::Code(fbcolor::C::Reset),
++                   tail.c_str());
++        }
++        if (nl == std::string::npos) break;
++        start = nl + 1;
++    }
++    return 0;
++}
++
+ static int adb_query_command(const std::string& command) {
+     std::string result;
+     std::string error;
+@@ -1770,8 +1824,11 @@ int adb_commandline(int argc, const char** argv) {
+         if (!adb_check_server_version(&error)) {
+             error_exit("failed to check server version: %s", error.c_str());
+         }
+-        printf("List of devices attached\n");
+-        return adb_query_command(query);
++        // MeowArchMobile: colour the header and per-device state. The server's
++        // reply is "<serial>\t<state>[ key:value...]" per line; only the
++        // presentation changes, the protocol is untouched.
++        printf("%s\n", fbcolor::Paint(fbcolor::C::Bold, "List of devices attached").c_str());
++        return adb_devices_command(query);
+     } else if (!strcmp(argv[0], "transport-id")) {
+         TransportId transport_id;
+         std::string error;
+@@ -2165,6 +2222,19 @@ int adb_commandline(int argc, const char** argv) {
+ 
+     /* "adb /?" is a common idiom under Windows */
+     else if (!strcmp(argv[0], "--help") || !strcmp(argv[0], "help") || !strcmp(argv[0], "/?")) {
++        // MeowArchMobile: `adb help` also takes a section name, and
++        // `adb help --list-sections` prints the section keywords.
++        if (argc > 1 && (!strcmp(argv[1], "--list-sections") || !strcmp(argv[1], "-l"))) {
++            return adbglue::ListHelpSections();
++        }
++        if (argc > 1) {
++            std::string v = adb_version();
++            size_t nl = v.find('\n');
++            std::string first = nl == std::string::npos ? v : v.substr(0, nl);
++            const std::string prefix = "Android Debug Bridge version ";
++            if (first.rfind(prefix, 0) == 0) first = first.substr(prefix.size());
++            return adbglue::ShowHelpSection(first, argv[1]);
++        }
+         help();
+         return 0;
+     } else if (!strcmp(argv[0], "--version") || !strcmp(argv[0], "version")) {
+diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
+index 11dde9c..b9c4edc 100644
+--- a/client/file_sync_client.cpp
++++ b/client/file_sync_client.cpp
+@@ -43,6 +43,7 @@
+ #include "adb_client.h"
+ #include "adb_io.h"
+ #include "adb_utils.h"
++#include "adbglue.h"
+ #include "compression_utils.h"
+ #include "file_sync_protocol.h"
+ #include "line_printer.h"
+@@ -120,6 +121,8 @@ struct TransferLedger {
+   private:
+     std::string last_progress_str;
+     std::chrono::steady_clock::time_point last_progress_time;
++    // MeowArchMobile: which file the progress bar is currently showing.
++    std::string armed_file_;
+ 
+   public:
+     TransferLedger() {
+@@ -164,6 +167,14 @@ struct TransferLedger {
+                         uint64_t file_total_bytes) {
+         static constexpr auto kProgressReportInterval = 100ms;
+ 
++        // MeowArchMobile: arm the bar once per file (the first report for a new
++        // name), so a multi-file push restarts it per file instead of running
++        // one bar across the whole batch.
++        if (file != armed_file_) {
++            armed_file_ = file;
++            adbglue::ProgressArm(file, file_total_bytes);
++        }
++
+         auto now = std::chrono::steady_clock::now();
+         if (now < last_progress_time + kProgressReportInterval) {
+             return;
+@@ -199,7 +210,12 @@ struct TransferLedger {
+             }
+         }
+         if (output != last_progress_str) {
+-            lp.Print(output, LinePrinter::LineType::INFO);
++            // MeowArchMobile: when the rich bar is on screen it *is* the
++            // progress line; printing upstream's "[42%] name" on top would
++            // give two competing overprinted lines.
++            if (!adbglue::ProgressEnabled()) {
++                lp.Print(output, LinePrinter::LineType::INFO);
++            }
+             last_progress_str = std::move(output);
+             last_progress_time = now;
+         }
+@@ -218,6 +234,9 @@ struct TransferLedger {
+            << direction_str << ", " << files_skipped << " skipped.";
+         ss << TransferRate();
+ 
++        // MeowArchMobile: the bar has done its job; clear it before the
++        // summary line so the two never interleave.
++        adbglue::ProgressFinish();
+         lp.Print(ss.str(), LinePrinter::LineType::INFO);
+         lp.KeepInfoLine();
+     }
+@@ -303,6 +322,10 @@ class SyncConnection {
+     void RecordBytesTransferred(size_t bytes) {
+         current_ledger_.bytes_transferred += bytes;
+         global_ledger_.bytes_transferred += bytes;
++        // MeowArchMobile: every transfer path funnels through here (v1, v2,
++        // brotli/lz4/zstd, dry-run excluded by its callers), so this single
++        // hook keeps the bar in step without touching each loop.
++        adbglue::ProgressUpdate(current_ledger_.bytes_transferred);
+     }
+ 
+     void RecordFileSent(std::string from, std::string to) {
+diff --git a/client/main.cpp b/client/main.cpp
+index 50a60a7..1cb0b97 100644
+--- a/client/main.cpp
++++ b/client/main.cpp
+@@ -40,6 +40,7 @@
+ #include "client/mdns_utils.h"
+ #include "client/transport_client.h"
+ #include "client/usb.h"
++#include "adbglue.h"
+ #include "client/usb_libusb_hotplug.h"
+ #include "commandline.h"
+ #include "sysdeps/chrono.h"
+@@ -248,5 +249,11 @@ int main(int argc, char* argv[], char* envp[]) {
+     __adb_argv = const_cast<const char**>(argv);
+     __adb_envp = const_cast<const char**>(envp);
+     adb_trace_init(argv);
++    // MeowArchMobile: pre-scan for --lang/--list-langs/--no-color/--color/
++    // --no-progress before adb_commandline() parses the real options, so the
++    // locale and colour state are known before any output (including help).
++    // EarlyInit consumes our own flags (--lang/--color/--no-progress/...)
++    // and returns the argc adb's parser should see.
++    argc = adbglue::EarlyInit(argc, argv);
+     return adb_commandline(argc - 1, const_cast<const char**>(argv + 1));
+ }

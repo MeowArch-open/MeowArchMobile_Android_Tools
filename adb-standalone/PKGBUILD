@@ -37,8 +37,10 @@ package() {
     ln -s ../lib/adb-meowarch/adb "$pkgdir/usr/bin/adb-meowarch"
 
     # The client's own completion script ships in the AOSP tree and is
-    # command-name specific; install it under our command name.
-    install -Dm644 "$root/../aosp-adbd/packages/modules/adb/adb.bash" \
-        "$pkgdir/usr/share/bash-completion/completions/adb-meowarch"
+    # command-name specific; install it under our command name. The replaced
+    # 'adb' word is the only edit — everything else is upstream's script.
+    sed 's/\badb\b/adb-meowarch/g' \
+        "$root/../aosp-adbd/packages/modules/adb/adb.bash" |
+        install -Dm644 /dev/stdin "$pkgdir/usr/share/bash-completion/completions/adb-meowarch"
 }
 

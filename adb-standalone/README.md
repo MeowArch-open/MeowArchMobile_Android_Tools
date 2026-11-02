@@ -11,13 +11,71 @@ Talks to real phones over USB (libusb, plus the native usbfs backend the client
 falls back to) and over TCP (`adb connect host:port`), with the genuine
 shell/sync/forward/pairing protocol and its compression (brotli/lz4/zstd).
 
+## MeowArchMobile additions
+
+    adb-meowarch --list-langs              # en, zh_CN, zh_TW, ja
+    adb-meowarch --lang=zh_CN devices      # one-shot language override
+    adb-meowarch --no-color ...            # plain output (NO_COLOR=1 too)
+    adb-meowarch --color ...               # force colour on a pipe
+    adb-meowarch --no-progress ...         # no transfer bar (NO_PROGRESS=1 too)
+    adb-meowarch help                      # categorised help
+    adb-meowarch help networking           # one section
+    adb-meowarch help --list-sections      # the section keywords
+
+**Colours** (`src/fb_color.cpp`, shared with better_fastboot): `adb devices`
+paints its header bold and each device's state — green for `device`, yellow for
+`offline`/`unauthorized`/`recovery`/`sideload`/`bootloader`, dim otherwise —
+and `adb help` uses bold section headers with a cyan command column. Detection
+is `isatty` + `TERM`, with `NO_COLOR` winning over `--color`, and a pipe gets no
+escape bytes at all, so scripted output is unchanged. On Windows the console
+gets `ENABLE_VIRTUAL_TERMINAL_PROCESSING` turned on first, because conhost and
+Windows Terminal leave it off.
+
+**Transfer progress bar** (`src/adb_progress.cpp`): `adb push`/`pull`/`sync`
+get one repainted line per file —
+
+    /data/local/tmp/big.img: [#######>----------]  38%  22.1 MiB/57.2 MiB 41.0 MiB/s
+
+with a real percentage, byte counter, instantaneous speed and a bar sized to the
+terminal (measured in display columns, so CJK file names do not wrap the line).
+It is driven from the sync layer's single byte-accounting hook, so every
+transport — v1, v2, brotli, lz4, zstd — reports identically, and it is
+suppressed when `stderr` is not a tty, when `NO_PROGRESS` is set, and by
+`--no-progress`. Upstream's own `[ 42%] name` line is skipped while the bar is
+on screen so the two never fight over the same line; the summary line
+(`1 file pushed, ...`) still prints as before.
+
+**Categorised help**: upstream prints one flat block. `adb help` now renders the
+same information grouped as global options / general / networking / file
+transfer / shell / app installation / debugging / security / scripting /
+internal debugging / usb / environment variables, with the command column
+aligned. `adb help <section>` prints one group and `adb help --list-sections`
+lists the keywords; both accept the English keyword and the translated section
+name.
+
+**Four languages**: en, zh_CN, zh_TW, ja for the help body, the progress-bar
+labels and our error strings (`--lang=`, `--list-langs`, or the usual `LANG` /
+`LC_ALL` / `LANGUAGE`). Flag descriptions and the environment-variable list stay
+English: they are spellings, and a mistranslated flag is worse than an English
+one.
+
 ## Layout
 
     CMakeLists.txt            build; references the AOSP tree in place
     patches/
-      0001  adb_mdns.h / adb.cpp: declare the mDNS ServiceInfo record locally
-            and report "no mDNS backend" in server-status (openscreen is not
-            an AOSP component, so it is not in the pinned tree)
+      0001  host UX hooks: adb_mdns.h/adb.cpp declare the mDNS ServiceInfo
+            record locally and report "no mDNS backend" in server-status;
+            client/main.cpp calls adbglue::EarlyInit (and strips our flags from
+            argv); client/commandline.cpp routes help to the categorised
+            renderer and colours `adb devices`; client/file_sync_client.cpp
+            drives the transfer bar from its byte-accounting hook
+    src/                      MeowArchMobile UX glue (not AOSP code):
+      fb_color.{h,cpp}              SGR escapes; tty/NO_COLOR/FORCE_COLOR
+      adb_progress.{h,cpp}          the push/pull bar (width in display columns)
+      adb_i18n.{h,cpp} + _en/_zh_cn/_zh_tw/_ja.cpp
+                                    message catalog, four languages
+      adb_help.{h,cpp}              categorised + colored help renderer
+      adbglue.{h,cpp}               the API the patch calls
     shim/
       include/build/version.h        vendored libbuildversion header
       include/platform_tools_version.h  version stamp (36.0.0, same as fastboot)
