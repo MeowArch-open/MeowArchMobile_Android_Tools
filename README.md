@@ -14,8 +14,9 @@ userland, no soong:
   mingw-w64 i686 cross-built exactly like Google's, `usb_windows.cpp` +
   AdbWinApi). Runs on the host, talks to real phones. Plus UX additions:
   live progress bar with speed/ETA, Did-you-want typo suggestions, colors,
-  four languages (en/zh_CN/zh_TW/ja), and generated bash/zsh/fish
-  completions.
+  four languages (en/zh_CN/zh_TW/ja), generated bash/zsh/fish completions, and
+  `flash-x` — flash a partition straight out of an OTA `payload.bin` without
+  unpacking it first.
 
 Both compile the genuine AOSP sources in place from a shared partial checkout
 (`../aosp-adbd`, pinned SHAs — see each README's Upstream table).
@@ -33,6 +34,7 @@ On the host (fastboot):
     pacman -U fastboot-meowarch-*.pkg.tar.zst
     fastboot-m devices
     fastboot-m flash boot boot.img
+    fastboot-m flash-x boot payload.bin      # straight from an OTA payload
 
 (`fastboot-meowarch` is installed as an alias; the distro's `android-tools`
 `fastboot` is untouched, so both packages coexist.)
