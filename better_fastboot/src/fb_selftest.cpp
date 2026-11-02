@@ -11,6 +11,7 @@
 
 #include "fb_i18n.h"
 #include "fb_suggest.h"
+#include "fb_help.h"
 #include "fb_i18n_en_generated.h"
 
 namespace {
@@ -113,6 +114,32 @@ void TestI18n() {
         }
         return out;
     };
+
+    {
+        // Help placement: flash-x is a command and must be emitted inside the
+        // "flashing:" section; every MeowArchMobile option stays in the
+        // trailing options block. Getting this wrong is invisible to the
+        // byte-parity check (only the first 100 lines are compared), which is
+        // exactly why it is asserted here.
+        size_t n = 0;
+        const fbhelp::ExtraOption* extras = fbhelp::ExtraOptions(&n);
+        bool saw_flashx = false;
+        for (size_t i = 0; i < n; i++) {
+            const char* key = extras[i].key;
+            if (!strcmp(key, "flash-x")) {
+                saw_flashx = true;
+                CHECK(extras[i].section == fbhelp::ExtraSection::kFlashing,
+                      "flash-x renders in the flashing section");
+            } else {
+                CHECK(key[0] == '-' && key[1] == '-', "%s is an option", key);
+                CHECK(extras[i].section == fbhelp::ExtraSection::kTopLevel,
+                      "%s renders in the options block", key);
+            }
+            CHECK(extras[i].en && strchr(extras[i].en, '\t') != nullptr,
+                  "%s has cmd<TAB>desc help text", key);
+        }
+        CHECK(saw_flashx, "flash-x is present in the extras table");
+    }
 
     size_t nlangs = 0;
     const fbi18n::LangInfo* langs = fbi18n::LangTable(&nlangs);

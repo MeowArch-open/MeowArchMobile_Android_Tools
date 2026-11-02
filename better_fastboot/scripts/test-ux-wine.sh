@@ -29,6 +29,16 @@ wfb() { # run fastboot.exe with env, capture stdout+stderr, strip wine noise
     timeout 120 wine "$FB" "$@" 2>&1 | grep -vE "^(MESA|.*pci id for fd|wine: |.*winehq)"
 }
 
+# Our extra command renders *inside* upstream's "flashing:" section, so it has
+# to be filtered out before diffing against the 100-line baseline — and only
+# the flash-x entry itself (its line plus the 28-space continuation lines
+# directly under it). Every upstream line is still compared byte for byte.
+strip_flashx() {
+    awk 'skip && /^ {28}/ { next } { skip = 0 }
+         /^ flash-x[ ]/ { skip = 1; next }
+         { print }'
+}
+
 echo "== 1. selftest =="
 if timeout 120 wine "$ST" 2>/dev/null | grep -q "all checks passed"; then
     ok "selftest under wine"
@@ -44,9 +54,17 @@ case "$V" in *"fastboot version"*) ok "--version: $V" ;; *) bad "--version: $V" 
 H="$(LANG=en_US.UTF-8 NO_COLOR=1 wfb --help | tr -d '\r')"
 N="$(printf '%s\n' "$H" | grep -c '')"
 [ "$N" = "109" ] && ok "help line count (100 upstream + 9 ours)" || bad "help line count = $N"
+# flash-x is a command: it belongs in "flashing:", not in the options block.
+FX_LINE="$(printf '%s\n' "$H" | grep -n '^ flash-x' | cut -d: -f1)"
+BASICS_LINE="$(printf '%s\n' "$H" | grep -n '^basics:' | cut -d: -f1)"
+if [ -n "$FX_LINE" ] && [ -n "$BASICS_LINE" ] && [ "$FX_LINE" -lt "$BASICS_LINE" ]; then
+    ok "flash-x rendered in the flashing section"
+else
+    bad "flash-x not in the flashing section (flash-x=$FX_LINE basics=$BASICS_LINE)"
+fi
 # Committed upstream baseline: tests/help-baseline-en.txt (captured from the
 # distro platform-tools fastboot --help, first 100 lines).
-printf '%s\n' "$H" | head -100 > /tmp/fb-win-help100.txt
+printf '%s\n' "$H" | strip_flashx | head -100 > /tmp/fb-win-help100.txt
 if diff -q /tmp/fb-win-help100.txt "$HERE/tests/help-baseline-en.txt" >/dev/null 2>&1; then
     ok "help first-100 == upstream baseline (byte-identical)"
 else

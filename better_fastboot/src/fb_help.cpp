@@ -52,6 +52,15 @@ void SplitLines(const std::string& desc, std::vector<std::string>* out) {
     }
 }
 
+// Section bookkeeping for extra *commands*. flash-x belongs in "flashing:", so
+// it is emitted when that section ends — after the vendor_boot entry AND its
+// --dtb modifier, since --dtb is documented as belonging to that command.
+// Sections in upstream's table are delimited by Blank rows; ShowHelp watches
+// for the next Section/Blank after this header to know the section is over.
+bool IsFlashingSection(const HelpRow& row) {
+    return row.kind == fbhelp::Section && row.id == (int)fbi18n::kSecFlashing;
+}
+
 void PrintEntry(const HelpRow& row) {
     std::string cmd, desc;
     if (row.id != 0) {
@@ -89,11 +98,46 @@ void PrintEntry(const HelpRow& row) {
     }
 }
 
+void PrintExtra(const ExtraOption& e) {
+    HelpRow row{Entry, (int)e.id, nullptr, nullptr};
+    const char* t = fbi18n::T(e.id);
+    if (t && t[0]) {
+        // PrintEntry splits "cmd\tdesc" from T(id) itself.
+        PrintEntry(row);
+        return;
+    }
+    std::string cmd, desc;
+    SplitEntry(e.en, &cmd, &desc);  // English fallback
+    HelpRow en{Entry, 0, cmd.c_str(), desc.c_str()};
+    PrintEntry(en);
+}
+
+// Prints the extras that belong in |section|, translated like everything else.
+void PrintExtrasInSection(const ExtraOption* extras, size_t nextras, ExtraSection section) {
+    for (size_t ei = 0; ei < nextras; ei++) {
+        if (extras[ei].section != section) continue;
+        PrintExtra(extras[ei]);
+    }
+}
+
 }  // namespace
 
 int ShowHelp() {
+    size_t nextras = 0;
+    const ExtraOption* extras = ExtraOptions(&nextras);
+
+    // Section an extra command belongs to is emitted when that section ends,
+    // i.e. at the next Section/Blank row after its own header.
+    bool in_flashing = false;
+    auto flush_flashing = [&] {
+        if (!in_flashing) return;
+        in_flashing = false;
+        PrintExtrasInSection(extras, nextras, ExtraSection::kFlashing);
+    };
+
     for (size_t i = 0; i < kHelpRowCount; i++) {
         const HelpRow& row = kHelpRows[i];
+        if (in_flashing && (row.kind == Section || row.kind == Blank)) flush_flashing();
         switch (row.kind) {
             case Usage: {
                 const char* text = row.a;
@@ -114,6 +158,7 @@ int ShowHelp() {
                     if (t && t[0]) text = t;
                 }
                 fprintf(stdout, "%s\n", fbcolor::Paint(fbcolor::C::Bold, text).c_str());
+                in_flashing = IsFlashingSection(row);
                 break;
             }
             case Raw:
@@ -124,23 +169,10 @@ int ShowHelp() {
                 break;
         }
     }
-    // Our extra options (appended to upstream's list, translated like the rest).
-    size_t nextras = 0;
-    const ExtraOption* extras = ExtraOptions(&nextras);
-    for (size_t ei = 0; ei < nextras; ei++) {
-        const ExtraOption& e = extras[ei];
-        HelpRow row{Entry, (int)e.id, nullptr, nullptr};
-        const char* t = fbi18n::T(e.id);
-        if (t && t[0]) {
-            // PrintEntry splits "cmd\tdesc" from T(id) itself.
-            PrintEntry(row);
-        } else {
-            std::string cmd, desc;
-            SplitEntry(e.en, &cmd, &desc);  // English fallback
-            HelpRow en{Entry, 0, cmd.c_str(), desc.c_str()};
-            PrintEntry(en);
-        }
-    }
+    flush_flashing();  // a section that ends at end-of-table
+    // Everything else (our options, and any command that has no section of its
+    // own) goes in the trailing block upstream uses for options.
+    PrintExtrasInSection(extras, nextras, ExtraSection::kTopLevel);
     return 0;
 }
 
@@ -153,20 +185,25 @@ const ExtraOption* ExtraOptions(size_t* count) {
         // table (that table is transcribed from upstream's show_help(), which
         // stays byte-identical), so it is rendered from the same extras list
         // --help already appends our options from.
+        // A command, not an option, so it renders inside "flashing:" — next to
+        // flash/flashall/update — instead of in the options block at the end.
         {"flash-x",
          "flash-x PARTITION PAYLOAD [NAME]\tExtract PARTITION from an OTA\n"
          "\tpayload.bin and flash it. NAME names the entry inside\n"
          "\tthe payload; it defaults to PARTITION with any slot\n"
          "\tsuffix removed.",
-         fbi18n::kHFlashX},
-        {"--lang", "--lang=CODE\tSet interface language (see --list-langs).", fbi18n::kOLang},
+         fbi18n::kHFlashX, ExtraSection::kFlashing},
+        {"--lang", "--lang=CODE\tSet interface language (see --list-langs).", fbi18n::kOLang,
+         ExtraSection::kTopLevel},
         {"--list-langs", "--list-langs\tList available interface languages and exit.",
-         fbi18n::kOListLangs},
-        {"--no-color", "--no-color\tDisable colored output (also NO_COLOR=1).", fbi18n::kONoColor},
-        {"--color", "--color\tForce colored output even when not a tty.", fbi18n::kOColor},
+         fbi18n::kOListLangs, ExtraSection::kTopLevel},
+        {"--no-color", "--no-color\tDisable colored output (also NO_COLOR=1).",
+         fbi18n::kONoColor, ExtraSection::kTopLevel},
+        {"--color", "--color\tForce colored output even when not a tty.", fbi18n::kOColor,
+         ExtraSection::kTopLevel},
         {"--no-progress",
          "--no-progress\tDisable the transfer progress bar (also NO_PROGRESS=1).",
-         fbi18n::kONoProgress},
+         fbi18n::kONoProgress, ExtraSection::kTopLevel},
     };
     *count = sizeof(kExtras) / sizeof(kExtras[0]);
     return kExtras;

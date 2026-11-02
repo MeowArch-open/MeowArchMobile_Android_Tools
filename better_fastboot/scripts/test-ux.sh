@@ -24,18 +24,41 @@ skip() { echo "  skip $*"; SKIP=$((SKIP+1)); }
 echo "== 1. self-test =="
 if [ -x "$ST" ] && "$ST"; then ok "selftest"; else bad "selftest"; fi
 
+
+# The baseline is upstream's own 100 lines. Our extra command renders *inside*
+# upstream's "flashing:" section, so it has to be filtered out before the
+# comparison — and the filter only removes the flash-x entry itself (its line
+# plus the 28-space continuation lines directly under it), never anything
+# upstream printed. That keeps the guarantee honest: every upstream line is
+# still checked byte for byte, wherever our addition sits.
+strip_flashx() {
+    awk 'skip && /^ {28}/ { next } { skip = 0 }
+         /^ flash-x[ ]/ { skip = 1; next }
+         { print }'
+}
+
 echo "== 2. English byte-parity (piped, no color) =="
 # help: our five extra options are appended; everything else is verbatim.
 H="$(LANG=en_US.UTF-8 NO_COLOR=1 "$FB" --help 2>/dev/null)"
 N="$(printf '%s\n' "$H" | grep -c '')"
-# upstream help is exactly 100 lines. Ours appends one blank line, the flash-x
-# command row (4 lines: the command, then three description lines) and the five
-# option rows (1 line each) = 109. The first 100 stay byte-identical, which the
-# baseline diff below is what actually guarantees.
+# upstream help is exactly 100 lines. Ours adds the flash-x command row (3
+# lines: the command plus two description lines, rendered inside "flashing:")
+# and one blank + five option rows (7 lines) at the end = 109. The first 100
+# stay byte-identical, which the baseline diff below actually guarantees.
 if [ "$N" = "109" ]; then ok "help line count (100 upstream + 9 ours)"; else bad "help line count = $N"; fi
+# flash-x is a command, so it must render inside "flashing:" — after the
+# upstream rows, before the "basics:" section starts — and NOT down in the
+# options block.
+FX_LINE="$(printf '%s\n' "$H" | grep -n '^ flash-x' | cut -d: -f1)"
+BASICS_LINE="$(printf '%s\n' "$H" | grep -n '^basics:' | cut -d: -f1)"
+if [ -n "$FX_LINE" ] && [ -n "$BASICS_LINE" ] && [ "$FX_LINE" -lt "$BASICS_LINE" ]; then
+  ok "flash-x rendered in the flashing section (line $FX_LINE < basics $BASICS_LINE)"
+else
+  bad "flash-x not in the flashing section (flash-x=$FX_LINE basics=$BASICS_LINE)"
+fi
 # byte-parity against the committed upstream baseline (tests/help-baseline-en.txt,
 # captured from the distro platform-tools fastboot --help).
-if printf '%s\n' "$H" | head -100 | diff -q - "$HERE/tests/help-baseline-en.txt" >/dev/null 2>&1; then
+if printf '%s\n' "$H" | strip_flashx | head -100 | diff -q - "$HERE/tests/help-baseline-en.txt" >/dev/null 2>&1; then
   ok "help first-100 == upstream baseline (byte-identical)"
 else
   bad "help diverges from upstream baseline"

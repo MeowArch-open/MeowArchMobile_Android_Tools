@@ -286,8 +286,12 @@ complete line at the end instead of smearing frames.
 
 Byte-parity guarantees (checked in CI): with colors/progress off (any pipe)
 and `LANG=en`, `--help`/`--version`/error output match upstream exactly —
-except the five extra options appended to the help and the `Did you want`
-hint replacing the bare `unknown command` line.
+except the five extra options appended to the help, the `flash-x` command row
+(rendered inside upstream's own `flashing:` section, right after
+`flash vendor_boot:RAMDISK` and its `--dtb` modifier), and the `Did you want`
+hint replacing the bare `unknown command` line. The parity test strips only the
+`flash-x` entry before diffing, so every upstream line is still compared byte
+for byte wherever our addition sits.
 
 ### `flash-x`: flash straight out of a payload.bin
 

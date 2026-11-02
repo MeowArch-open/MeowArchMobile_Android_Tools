@@ -21,15 +21,24 @@ namespace fbhelp {
 // Print the full help text to stdout. Returns 0 (a Main() return value).
 int ShowHelp();
 
-// The five MeowArchMobile options appended to upstream's help (they have no
-// row in the generated table). |en| is the English "cmd\tdesc" text used when
-// the active language has no translation; |id| is the translated message ID.
-// Exposed so the completion-script generator can source the same descriptions
-// as --help instead of duplicating them.
+// The MeowArchMobile-only commands and options, which have no row in the
+// generated table (that table is transcribed verbatim from upstream's
+// show_help()). |en| is the English "cmd\tdesc" text used when the active
+// language has no translation; |id| is the translated message ID. Exposed so
+// the completion-script generator can source the same descriptions as --help
+// instead of duplicating them.
+//
+// Placement matters for commands: `--help` renders an extra command *inside*
+// the section it belongs to (flash-x sits in "flashing:" right after its
+// upstream neighbours) and options in the trailing block upstream uses for
+// them. |section| says which; kTopLevel means "the trailing options block".
+enum class ExtraSection { kTopLevel, kFlashing };
+
 struct ExtraOption {
-    const char* key;  // bare option, e.g. "--lang"
-    const char* en;   // "--lang=CODE\tSet interface language ..."
+    const char* key;   // bare command/option, e.g. "flash-x", "--lang"
+    const char* en;    // "flash-x PARTITION PAYLOAD [NAME]\tExtract ..."
     fbi18n::Msg id;
+    ExtraSection section;
 };
 const ExtraOption* ExtraOptions(size_t* count);
 
