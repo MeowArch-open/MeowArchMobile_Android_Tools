@@ -55,6 +55,22 @@ case "$SECTIONS" in
     *) bad "help --list-sections: $SECTIONS" ;;
 esac
 if "$ADB" help networking 2>&1 | grep -q 'connect HOST'; then ok "help <section>"; else bad "help <section>"; fi
+# Our own flags are removed from argv before adb's parser runs, so the only
+# place they are documented is the meowarch section. If it stops listing them
+# the flags become undiscoverable.
+MEOW="$("$ADB" help meowarch 2>&1)"
+for f in --lang=CODE --list-langs --no-color --color --no-progress; do
+    case "$MEOW" in
+        *"$f"*) ok "help meowarch documents $f" ;;
+        *) bad "help meowarch omits $f" ;;
+    esac
+done
+# Each documented flag must actually work (not just be listed).
+for f in "--list-langs" "--no-color" "--color" "--no-progress"; do
+    "$ADB" $f version >/dev/null 2>&1 \
+        && ok "$f is accepted" || bad "$f rejected by the parser"
+done
+"$ADB" --lang=en version >/dev/null 2>&1 && ok "--lang=en is accepted" || bad "--lang=en rejected"
 "$ADB" help nosuchsection >/dev/null 2>&1; [ $? -ne 0 ] && ok "unknown section exits 1" || bad "unknown section rc"
 
 # Error strings are localized too. The device-not-found text is built inside
@@ -105,7 +121,7 @@ else
     # gains escapes, and everything else (serial, the padding that upstream uses
     # instead of a tab, "transport_id:N") stays byte-for-byte. On a pipe there
     # are no escapes at all and the output is byte-identical to plain devices -l.
-    script -q -c "$ADB -s $SER devices -l" "$TMP/dev.txt" >/dev/null 2>&1
+    TERM=xterm-256color script -q -c "$ADB -s $SER devices -l" "$TMP/dev.txt" >/dev/null 2>&1
     LINE="$(tr -d '\r' < "$TMP/dev.txt" | grep -a "^$SER" | head -1)"
     # Strongest form of the check: strip the escapes and the pty line must be
     # identical to the pipe line, i.e. colouring changes nothing about layout.
@@ -118,6 +134,14 @@ else
     fi
     tr -d '\r' < "$TMP/dev.txt" | grep -a "^$SER" | grep -q $'\033' \
         && ok "devices -l colours the state on a pty" || bad "devices -l had no colour on a pty"
+    # And the converse: a pty that claims TERM=dumb (or no TERM at all) must
+    # NOT get escapes, because we cannot know the terminal interprets them.
+    TERM=dumb script -q -c "$ADB -s $SER devices -l" "$TMP/dumb.txt" >/dev/null 2>&1
+    if tr -d '\r' < "$TMP/dumb.txt" | grep -q $'\033'; then
+        bad "TERM=dumb still got colour escapes"
+    else
+        ok "TERM=dumb gets no colour"
+    fi
     PLAIN="$("$ADB" -s "$SER" devices -l)"
     case "$PLAIN" in
         *$'\033'*) bad "devices -l leaked escapes into a pipe" ;;
@@ -159,7 +183,7 @@ else
     # Push/pull progress bar: on a pty it must paint percentage frames; on a
     # pipe it must stay byte-identical to upstream (no bar at all).
     head -c 8000000 /dev/urandom > "$TMP/bar.bin"
-    script -q -c "$ADB -s $SER push $TMP/bar.bin /tmp/adb-test-bar.bin" "$TMP/pty.txt" >/dev/null 2>&1
+    TERM=xterm-256color script -q -c "$ADB -s $SER push $TMP/bar.bin /tmp/adb-test-bar.bin" "$TMP/pty.txt" >/dev/null 2>&1
     BAR_FRAMES="$(tr '\r' '\n' < "$TMP/pty.txt" | grep -acE '\[[#>-]+\]')"
     if [ "${BAR_FRAMES:-0}" -ge 2 ]; then ok "push progress bar repaints ($BAR_FRAMES frames on a pty)"
     else bad "push progress bar: $BAR_FRAMES frames"; fi
@@ -169,7 +193,7 @@ else
         *) ok "no progress bar when stderr is a pipe" ;;
     esac
     # NO_PROGRESS / --no-progress turn it off on a tty too.
-    script -q -c "NO_PROGRESS=1 $ADB -s $SER push $TMP/bar.bin /tmp/adb-test-bar.bin" "$TMP/pty2.txt" >/dev/null 2>&1
+    TERM=xterm-256color script -q -c "NO_PROGRESS=1 $ADB -s $SER push $TMP/bar.bin /tmp/adb-test-bar.bin" "$TMP/pty2.txt" >/dev/null 2>&1
     NP="$(tr '\r' '\n' < "$TMP/pty2.txt" | grep -acE '\[[#>-]+\]')"
     [ "${NP:-0}" -eq 0 ] && ok "NO_PROGRESS suppresses the bar" || bad "NO_PROGRESS left $NP frames"
 

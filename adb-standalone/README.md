@@ -22,6 +22,11 @@ shell/sync/forward/pairing protocol and its compression (brotli/lz4/zstd).
     adb-meowarch help networking           # one section
     adb-meowarch help --list-sections      # the section keywords
 
+`adb help meowarch` (or `adb help --list-sections` → `meowarch`) lists the five
+options this build adds and what each does — since they are stripped from argv
+before adb's own parser runs, upstream's help has nowhere to show them. That
+section is localized like the rest.
+
 **Colours** (`src/fb_color.cpp`, shared with better_fastboot): `adb devices`
 paints its header bold and each device's state — green for `device`, yellow for
 `offline`/`unauthorized`/`recovery`/`sideload`/`bootloader`, dim otherwise —
@@ -44,6 +49,15 @@ suppressed when `stderr` is not a tty, when `NO_PROGRESS` is set, and by
 `--no-progress`. Upstream's own `[ 42%] name` line is skipped while the bar is
 on screen so the two never fight over the same line; the summary line
 (`1 file pushed, ...`) still prints as before.
+
+`TERM` matters, like it does for git/ls. Colour is emitted only when `TERM` is
+set and is not `dumb`; an unset `TERM` means the terminal has not advertised
+ANSI support, so nothing colour-related goes out. The bar is more permissive —
+it needs a tty and refuses only `TERM=dumb` — because repainting a line with a
+carriage return and an erase-to-end is not colour: on a tty with no `TERM` it
+still animates, just without colour. Verified: `TERM=xterm` gives coloured
+frames, an unset `TERM` gives plain frames, `TERM=dumb` gives no bar and no
+escapes at all.
 
 **Categorised help**: upstream prints one flat block. `adb help` now renders the
 same information grouped as global options / general / networking / file

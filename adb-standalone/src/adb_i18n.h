@@ -73,16 +73,11 @@
     X(kHReconnect)                                                                             \
     X(kHStartServer)                                                                           \
     X(kHKillServer)                                                                            \
-    /* runtime: transfer bar */                                                                \
-    X(kPushing)                                                                                \
-    X(kPulling)                                                                                \
-    X(kFiles)                                                                                  \
     /* runtime: errors and hints */                                                            \
     X(kErrPrefix)                                                                              \
-    X(kNoDevices)                                                                              \
-    X(kDeviceNotFound)                                                                         \
-    X(kMdnsUnavailable)                                                                        \
-    X(kRunHelpHint)                                                                            \
+    /* MeowArchMobile section in help */                                                       \
+    X(kSecMeowArch)                                                                            \
+    X(kSecUnknown)                                                                             \
     /* MeowArchMobile options */                                                               \
     X(kOLang)                                                                                  \
     X(kOListLangs)                                                                             \

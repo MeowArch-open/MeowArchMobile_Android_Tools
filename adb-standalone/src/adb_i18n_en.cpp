@@ -69,22 +69,15 @@ const MsgEntry kEnTable[] = {
     {kHStartServer, "start-server\tensure that there is a server running"},
     {kHKillServer, "kill-server\tkill the server if it is running"},
     // -- runtime ---------------------------------------------------------------
-    {kPushing, "Pushing"},
-    {kPulling, "Pulling"},
-    {kFiles, "files"},
     {kErrPrefix, "adb: error: "},
-    {kNoDevices, "no devices/emulators found"},
-    {kDeviceNotFound, "device '%s' not found"},
-    {kMdnsUnavailable, "mDNS discovery is not available in this build\n"
-                       "  (use `adb connect IP:PORT` with the address from the device's\n"
-                       "  wireless-debugging screen instead)"},
-    {kRunHelpHint, "Run 'adb help' for usage."},
     // -- MeowArchMobile options ------------------------------------------------
     {kOLang, "--lang=CODE\tSet interface language (see --list-langs)."},
     {kOListLangs, "--list-langs\tList available interface languages and exit."},
     {kONoColor, "--no-color\tDisable colored output (also NO_COLOR=1)."},
     {kOColor, "--color\tForce colored output even when not a tty."},
     {kONoProgress, "--no-progress\tDisable the transfer progress bar (also NO_PROGRESS=1)."},
+    {kSecMeowArch, "meowarch (MeowArchMobile additions):"},
+    {kSecUnknown, "unknown help section '%s' (try `adb help --list-sections`)"},
     {kLangsHeader, "Available languages (--lang=CODE):"},
     {kLangCurrent, " (current)"},
 };

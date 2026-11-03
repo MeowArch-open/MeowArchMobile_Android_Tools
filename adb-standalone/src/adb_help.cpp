@@ -22,9 +22,9 @@ using adbi18n::Msg;
 
 // Kind of content in a section body.
 enum class Body {
-    kEntries,  // table entries, printed in the command column
-    kOptions,  // the global-options block, verbatim
-    kEnv,      // the environment-variables block, verbatim
+    kEntries,   // table entries, printed in the command column
+    kOptions,   // the global-options block, verbatim
+    kEnv,       // the environment-variables block, verbatim
 };
 
 struct Section {
@@ -47,6 +47,7 @@ const Section kSections[] = {
     {adbi18n::kSecInternal, "internal", Body::kEntries},
     {adbi18n::kSecUsb, "usb", Body::kEntries},
     {adbi18n::kSecEnvironment, "environment", Body::kEnv},
+    {adbi18n::kSecMeowArch, "meowarch", Body::kEntries},
 };
 constexpr size_t kSectionCount = sizeof(kSections) / sizeof(kSections[0]);
 
@@ -102,6 +103,12 @@ const EntryRow kEntries[] = {
     {adbi18n::kSecInternal, adbi18n::kHStartServer},
     {adbi18n::kSecInternal, adbi18n::kHKillServer},
     {adbi18n::kSecInternal, adbi18n::kHReconnect},
+
+    {adbi18n::kSecMeowArch, adbi18n::kOLang},
+    {adbi18n::kSecMeowArch, adbi18n::kOListLangs},
+    {adbi18n::kSecMeowArch, adbi18n::kONoColor},
+    {adbi18n::kSecMeowArch, adbi18n::kOColor},
+    {adbi18n::kSecMeowArch, adbi18n::kONoProgress},
     {adbi18n::kSecUsb, adbi18n::kHAttach},
     {adbi18n::kSecUsb, adbi18n::kHDetach},
 };
@@ -269,8 +276,9 @@ int ShowHelp(const char* version) {
 int ShowSection(const char* version, const char* name) {
     Msg title = SectionFor(name);
     if (title == adbi18n::kNone) {
-        fprintf(stderr, "%sunknown help section '%s' (try `adb help --list-sections`)\n",
-                adbi18n::T(adbi18n::kErrPrefix), name);
+        char msg[512];
+        snprintf(msg, sizeof(msg), adbi18n::T(adbi18n::kSecUnknown), name);
+        fprintf(stderr, "%s%s\n", adbi18n::T(adbi18n::kErrPrefix), msg);
         return 1;
     }
     PrintVersionLine(version);
