@@ -75,8 +75,11 @@ jobs:
           [ "$N" = "1" ] || { echo "ADBD_NO_AUTH block appears $N times, want 1"; exit 1; }
           # The guard is gone: usb_init() must be reachable from adbd_main.
           objdump -dC build-native/adbd | awk '/^[0-9a-f]+ <.*>:/{f=$2} /call.*usb_init/{print f}' | grep -q 'adbd_main'
-          # and the tree carries no leftover patch artifacts
-          ! find ../aosp-adbd/packages/modules/adb -name '*.rej' -o -name '*.orig' | grep -q .
+          # And the tree carries no leftover patch artifacts. Capture first:
+          # a `find | grep -q` pipeline under `sh -e` is fragile (grep exits at
+          # the first match, find takes SIGPIPE) and would misreport either way.
+          ARTIFACTS=$(find ../aosp-adbd/packages/modules/adb -name '*.rej' -o -name '*.orig' | head -1)
+          [ -z "$ARTIFACTS" ] || { echo "patch left artifacts: $ARTIFACTS"; exit 1; }
 
       - name: Smoke test (TCP, shell + push/pull)
         working-directory: adbd-standalone

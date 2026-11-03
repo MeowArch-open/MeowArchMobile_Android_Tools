@@ -83,7 +83,7 @@ foreach(_patch
         0001-fdevent.h-include-vector-explicitly.patch
         0002-adb-host-ux.patch)
     execute_process(
-        COMMAND patch -N -s --fuzz=0 -r /dev/null -d "${ADB}" -p1 -i
+        COMMAND patch -N -s --fuzz=0 --no-backup-if-mismatch -r /dev/null -d "${ADB}" -p1 -i
                 "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"
         RESULT_VARIABLE _patch_rc ERROR_QUIET)
     if(NOT _patch_rc EQUAL 0 AND NOT _patch_rc EQUAL 1)

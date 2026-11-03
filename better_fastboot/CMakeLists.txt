@@ -122,7 +122,7 @@ foreach(_patch
     # -r /dev/null: when patch -N skips an already-applied hunk it would
     # otherwise litter the tree with .rej files on every re-configure.
     execute_process(
-        COMMAND patch -N -s --fuzz=0 -r /dev/null -d "${SYSCORE}" -p1 -i
+        COMMAND patch -N -s --fuzz=0 --no-backup-if-mismatch -r /dev/null -d "${SYSCORE}" -p1 -i
                 "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"
         RESULT_VARIABLE _patch_rc ERROR_QUIET)
     if(NOT _patch_rc EQUAL 0 AND NOT _patch_rc EQUAL 1)
