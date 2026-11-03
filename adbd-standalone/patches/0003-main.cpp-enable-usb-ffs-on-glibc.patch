@@ -8,17 +8,31 @@ adbd_main() is #if defined(__ANDROID__)-guarded; drop the guard so a glibc
 adbd picks up /dev/usb-ffs/adb/ep0 when a gadget has been configured.
 The access() check makes it a no-op everywhere else.
 
+Regenerated with exact context: the hunk header counted 10 old lines where
+the body has 12 (10 context + 2 removals), so patch -N only took it with
+fuzz. With fuzz off it failed outright — meaning the guard had silently
+never been removed in the working tree.
+
+diff --git a/daemon/main.cpp b/daemon/main.cpp
+index 931b170..43f2058 100644
 --- a/daemon/main.cpp
 +++ b/daemon/main.cpp
-@@ -314,10 +314,8 @@
+@@ -258,13 +265,16 @@ int adbd_main() {
+ 
      bool is_usb = false;
-
+ 
 -#if defined(__ANDROID__)
++    // MeowArchMobile: the guard dropped. daemon/usb.cpp is plain Linux (kernel
++    // AIO + FunctionFS ioctls + eventfd); only this call site was
++    // #if defined(__ANDROID__), so a glibc adbd never listened on
++    // /dev/usb-ffs/adb/ep0 even with the gadget configured. The access() check
++    // keeps it a no-op where no FunctionFS endpoint exists.
      if (access(USB_FFS_ADB_EP0, F_OK) == 0) {
          // Listen on USB.
          usb_init();
          is_usb = true;
      }
 -#endif
-
+ 
      // If one of these properties is set, also listen on that port.
+     // If one of the properties isn't set and we couldn't listen on usb, listen

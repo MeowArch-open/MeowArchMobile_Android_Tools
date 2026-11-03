@@ -39,6 +39,7 @@ bool IsHelpSection(const char* name);
 // ledger arms it with the file name and expected size, reports bytes as they
 // move, and finishes before printing its usual summary line.
 void ProgressArm(const std::string& label, uint64_t total);
+void ProgressSetLabel(const std::string& label);
 void ProgressUpdate(uint64_t done);
 void ProgressFinish();
 bool ProgressEnabled();

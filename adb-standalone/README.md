@@ -43,8 +43,11 @@ get one repainted line per file —
 
 with a real percentage, byte counter, instantaneous speed and a bar sized to the
 terminal (measured in display columns, so CJK file names do not wrap the line).
-It is driven from the sync layer's single byte-accounting hook, so every
-transport — v1, v2, brotli, lz4, zstd — reports identically, and it is
+One file gets its own bar with that file's size; a directory push/pull or
+`adb sync` runs a single bar over the whole batch (that is the only total worth
+showing) with the label following the file in flight. It is driven from the
+sync layer's progress hook, so every transport — v1, v2, brotli, lz4, zstd —
+reports identically, and it is
 suppressed when `stderr` is not a tty, when `NO_PROGRESS` is set, and by
 `--no-progress`. Upstream's own `[ 42%] name` line is skipped while the bar is
 on screen so the two never fight over the same line; the summary line

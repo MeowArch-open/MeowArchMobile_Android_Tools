@@ -52,6 +52,9 @@ int g_count = 0;
 
 double g_last_draw_t = 0.0;
 uint64_t g_last_draw_bytes = 0;
+uint64_t g_done = 0;
+
+uint64_t last_done() { return g_done; }
 
 double Now() {
     struct timespec ts;
@@ -265,6 +268,7 @@ void Arm(const std::string& label, uint64_t total) {
     g_total = total;
     g_head = 0;
     g_count = 0;
+    g_done = 0;
     g_last_draw_t = 0.0;
     g_last_draw_bytes = 0;
     if (g_enabled) {
@@ -273,9 +277,18 @@ void Arm(const std::string& label, uint64_t total) {
     }
 }
 
+void SetLabel(const std::string& label) {
+    if (!g_armed) return;
+    if (g_label != label) {
+        g_label = label;
+        Draw(last_done());
+    }
+}
+
 void Update(uint64_t done) {
     if (!g_enabled || !g_armed) return;
 
+    g_done = done;
     double t = Now();
     // 80ms / ~1% of the transfer, whichever comes later — same cadence the
     // fastboot bar uses, so a big push repaints smoothly instead of spinning.

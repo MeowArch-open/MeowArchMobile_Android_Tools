@@ -96,6 +96,11 @@ endif()
 # Source patches for the AOSP tree live in patches/ and are applied to the
 # tree in place. Idempotent: rc=1 means "reversed or previously applied"
 # (patch -N already skips those), which is fine; anything else is fatal.
+# --fuzz=0 is load-bearing: a hunk that only matches with fuzz can be
+# re-applied at a shifted offset on every configure, duplicating its block
+# (daemon/main.cpp once carried 22 copies of the ADBD_NO_AUTH block that
+# way). With fuzz off, a bad hunk fails loudly instead. scripts/
+# check-patches.py verifies every patch applies exactly and is idempotent.
 #   0001  fastboot_driver_interface.h: include <cstdint> explicitly — the
 #         pinned 2025-03 snapshot omits it and newer libstdc++/libc++ headers
 #         no longer leak uint32_t into it (soong build broke the same way).
@@ -117,7 +122,7 @@ foreach(_patch
     # -r /dev/null: when patch -N skips an already-applied hunk it would
     # otherwise litter the tree with .rej files on every re-configure.
     execute_process(
-        COMMAND patch -N -s -r /dev/null -d "${SYSCORE}" -p1 -i
+        COMMAND patch -N -s --fuzz=0 -r /dev/null -d "${SYSCORE}" -p1 -i
                 "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"
         RESULT_VARIABLE _patch_rc ERROR_QUIET)
     if(NOT _patch_rc EQUAL 0 AND NOT _patch_rc EQUAL 1)

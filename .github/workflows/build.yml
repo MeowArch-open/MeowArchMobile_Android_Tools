@@ -42,12 +42,41 @@ jobs:
         working-directory: adbd-standalone
         run: ./scripts/fetch-aosp.sh
 
+      - name: Check every patch applies with exact context
+        run: |
+          # Guards against a class of failure that already bit this repo twice.
+          # A hunk whose context only matches with fuzz (patch's default allows
+          # 2 lines of drift) is re-applied at a shifted offset on every
+          # re-configure, because -N cannot recognize it as already present --
+          # daemon/main.cpp had accumulated 22 copies of one block. The other
+          # direction is worse: a hunk whose line counts do not match its body
+          # applies with fuzz in one place and silently never applies at all in
+          # another, which is how the USB-FFS guard stayed in the tree.
+          # Every build now runs patch --fuzz=0; this step proves that is safe
+          # for all nine patches across the three projects before CI builds.
+          python3 scripts/check-patches.py
+
       - name: Configure & build (native)
         working-directory: adbd-standalone
         run: |
           cmake -B build-native -DCMAKE_BUILD_TYPE=RelWithDebInfo \
                 -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           cmake --build build-native -j"$(nproc)"
+
+      - name: Verify the patched-in behaviour is actually compiled in
+        working-directory: adbd-standalone
+        run: |
+          set -x
+          # Both daemon/main.cpp patches used to fail silently: 0002 duplicated
+          # its block on every re-configure (22 copies once) and 0003 left the
+          # #if defined(__ANDROID__) guard around usb_init() in place, so the
+          # binary never listened on /dev/usb-ffs/adb/ep0. Assert both.
+          N=$(grep -c 'getenv("ADBD_NO_AUTH")' ../aosp-adbd/packages/modules/adb/daemon/main.cpp)
+          [ "$N" = "1" ] || { echo "ADBD_NO_AUTH block appears $N times, want 1"; exit 1; }
+          # The guard is gone: usb_init() must be reachable from adbd_main.
+          objdump -dC build-native/adbd | awk '/^[0-9a-f]+ <.*>:/{f=$2} /call.*usb_init/{print f}' | grep -q 'adbd_main'
+          # and the tree carries no leftover patch artifacts
+          ! find ../aosp-adbd/packages/modules/adb -name '*.rej' -o -name '*.orig' | grep -q .
 
       - name: Smoke test (TCP, shell + push/pull)
         working-directory: adbd-standalone

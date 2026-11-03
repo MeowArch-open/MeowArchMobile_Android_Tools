@@ -97,6 +97,7 @@ int ListHelpSections() { return adbhelp::ListSections(); }
 bool IsHelpSection(const char* name) { return adbhelp::IsSection(name); }
 
 void ProgressArm(const std::string& label, uint64_t total) { adbprogress::Arm(label, total); }
+void ProgressSetLabel(const std::string& label) { adbprogress::SetLabel(label); }
 void ProgressUpdate(uint64_t done) { adbprogress::Update(done); }
 void ProgressFinish() { adbprogress::Finish(); }
 bool ProgressEnabled() { return adbprogress::Enabled(); }

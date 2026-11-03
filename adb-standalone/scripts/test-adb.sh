@@ -197,6 +197,51 @@ else
     NP="$(tr '\r' '\n' < "$TMP/pty2.txt" | grep -acE '\[[#>-]+\]')"
     [ "${NP:-0}" -eq 0 ] && ok "NO_PROGRESS suppresses the bar" || bad "NO_PROGRESS left $NP frames"
 
+    # Multi-file push: ONE bar for the batch (that is the only total the user
+    # can make sense of), with the label following the file in flight.
+    # Regression: the bar used to be fed the ledger's cumulative byte count
+    # while armed with a single file's size, so from the second file on it sat
+    # pinned at 100% and the numbers ran past the total (6.2 MiB/5.7 MiB).
+    # Push a DIRECTORY, not two named files: a directory transfer calls
+    # NewTransfer() once for the whole batch, so the ledger accumulates across
+    # files. Two separately-named arguments get their own transfer each and
+    # would hide the bug entirely.
+    mkdir -p "$TMP/multi"
+    head -c 6000000 /dev/urandom > "$TMP/multi/a.img"
+    head -c 2000000 /dev/urandom > "$TMP/multi/b.img"
+    TERM=xterm-256color script -q -c \
+        "$ADB -s $SER push $TMP/multi $TMP/multi-out" "$TMP/multi.txt" >/dev/null 2>&1
+    FILES_BARRED="$(tr '\r' '\n' < "$TMP/multi.txt" | grep -aE '\[[#>-]+\]' | grep -aoE '[ab]\.img' | sort -u | tr -d '\n')"
+    if [ "$FILES_BARRED" = "a.imgb.img" ]; then
+        ok "multi-file push names every file on the batch bar"
+    else
+        bad "multi-file push barred: '$FILES_BARRED' (want 'a.imgb.img')"
+    fi
+    # No frame may report more bytes than the total it is counting against —
+    # for a batch that is the batch total. With the cumulative-counter bug a
+    # directory push showed "7.6 MiB/5.7 MiB" and pinned at 100%, which is
+    # deterministic and does not depend on how many frames a fast loopback
+    # transfer happens to emit.
+    OVER="$(tr '\r' '\n' < "$TMP/multi.txt" \
+        | sed 's/\x1b\[[0-9;]*m//g' \
+        | grep -aE '\[[#>-]+\]' \
+        | grep -aoE '[0-9.]+ (B|KiB|MiB|GiB)/[0-9.]+ (B|KiB|MiB|GiB)' \
+        | awk -F'[ /]' '{
+            # With the default FS this line would be "5.8 MiB/5.7 MiB" ->
+            # $2="MiB/5.7", so m[u1] stays empty and every comparison passes;
+            # that is what let the bug through the first version of this check.
+            m["B"]=1; m["KiB"]=1024; m["MiB"]=1048576; m["GiB"]=1073741824;
+            # 8% tolerance: upstream legitimately overshoots a little when a
+            # file grows between stat and read, but the cumulative-counter bug
+            # overshoots by the whole rest of the batch (33%+ here).
+            if ($1*m[$2] > $3*m[$4] * 1.08) print $0;
+          }')"
+    if [ -z "$OVER" ]; then
+        ok "no bar frame exceeds its file's size"
+    else
+        bad "bar over-reported bytes: $(printf '%s' "$OVER" | head -2 | tr '\n' ' ')"
+    fi
+
     # server-status protobuf (goes through protobuf TextFormat)
     ST="$("$ADB" -s "$SER" server-status 2>&1)"
     case "$ST" in

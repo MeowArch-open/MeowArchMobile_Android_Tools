@@ -1,19 +1,29 @@
 From: MeowArchMobile adbd standalone build
 Subject: [PATCH] main.cpp: honor ADBD_NO_AUTH on non-Android hosts
 
-auth_required defaults to true and only Android's ro.adb.secure /
-userdebug logic ever clears it. A glibc host has no framework to approve
-keys, so give it an escape hatch: ADBD_NO_AUTH=1 disables adbd-side
-authentication entirely.
+auth_required defaults to true and only Android's ro.adb.secure / userdebug
+logic ever clears it. A glibc host has no framework to approve keys, so give
+it an escape hatch: ADBD_NO_AUTH=1 disables adbd-side authentication
+entirely (the test harness and the USB-FFS bring-up both need it).
 
+Context is exact on purpose. The previous version declared two '#endif'
+lines where the file has one '}' plus one '#endif', so patch only matched
+with fuzz — and fuzz lets a hunk match at a shifted offset, so every build
+re-applied it as a new copy instead of seeing it as already present. That
+is how daemon/main.cpp had accumulated 22 identical blocks.
+
+diff --git a/daemon/main.cpp b/daemon/main.cpp
+index 931b170..43f2058 100644
 --- a/daemon/main.cpp
 +++ b/daemon/main.cpp
-@@ -235,6 +235,11 @@ int adbd_main() {
- #endif
+@@ -233,6 +233,13 @@ int adbd_main() {
+     }
  #endif
  
 +#if !defined(__ANDROID__)
-+    // No framework to approve keys on a glibc host; allow opt-out entirely.
++    // MeowArchMobile: no framework to approve keys on a glibc host, so give it
++    // an escape hatch — ADBD_NO_AUTH=1 disables adbd-side authentication
++    // entirely (the test harness and the USB-FFS bring-up both need it).
 +    if (getenv("ADBD_NO_AUTH")) auth_required = false;
 +#endif
 +

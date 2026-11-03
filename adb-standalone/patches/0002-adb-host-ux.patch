@@ -241,7 +241,7 @@ index 5cd3ab6..5a42e8f 100644
          return 0;
      } else if (!strcmp(argv[0], "--version") || !strcmp(argv[0], "version")) {
 diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
-index 11dde9c..b9c4edc 100644
+index 11dde9c..19689e9 100644
 --- a/client/file_sync_client.cpp
 +++ b/client/file_sync_client.cpp
 @@ -43,6 +43,7 @@
@@ -252,31 +252,75 @@ index 11dde9c..b9c4edc 100644
  #include "compression_utils.h"
  #include "file_sync_protocol.h"
  #include "line_printer.h"
-@@ -120,6 +121,8 @@ struct TransferLedger {
+@@ -120,6 +121,10 @@ struct TransferLedger {
    private:
      std::string last_progress_str;
      std::chrono::steady_clock::time_point last_progress_time;
-+    // MeowArchMobile: which file the progress bar is currently showing.
++    // MeowArchMobile: which file the progress bar is currently showing, and
++    // which total it was armed with (so a directory batch is detected once).
 +    std::string armed_file_;
++    uint64_t armed_total_ = 0;
  
    public:
      TransferLedger() {
-@@ -164,6 +167,14 @@ struct TransferLedger {
+@@ -143,6 +148,10 @@ struct TransferLedger {
+         bytes_expected = 0;
+         last_progress_str.clear();
+         last_progress_time = {};
++        // MeowArchMobile: so re-pushing the same file re-arms the bar instead
++        // of inheriting the previous transfer's speed samples.
++        armed_file_.clear();
++        armed_total_ = 0;
+     }
+ 
+     std::string TransferRate() {
+@@ -164,6 +173,45 @@ struct TransferLedger {
                          uint64_t file_total_bytes) {
          static constexpr auto kProgressReportInterval = 100ms;
  
-+        // MeowArchMobile: arm the bar once per file (the first report for a new
-+        // name), so a multi-file push restarts it per file instead of running
-+        // one bar across the whole batch.
-+        if (file != armed_file_) {
-+            armed_file_ = file;
-+            adbglue::ProgressArm(file, file_total_bytes);
++        // MeowArchMobile: drive the progress bar. Placed before the throttle
++        // below on purpose — that throttle rate-limits upstream's text line,
++        // and the bar has its own cadence.
++        //
++        // Two cases, and mixing them up is the bug this guards against. A
++        // single-file transfer gets its own bar sized to that file. A batch
++        // (directory push/pull, `adb sync`) gets ONE bar sized to
++        // bytes_expected, because that is the only total progress can be read
++        // against; its label follows the file in flight. Feeding a per-file bar
++        // the batch's cumulative counter pins it at 100% from the second file
++        // on and lets the numbers run past the total (6.2 MiB/5.7 MiB).
++        if (!adbglue::ProgressEnabled()) {
++            // no bar: nothing to arm or feed
++        } else if (bytes_expected == 0 || expect_multiple_files) {
++            // Multi-file transfer (directory push/pull, `adb sync`): ONE bar for
++            // the whole batch, because that is the only total the user can see
++            // progress against; only the label follows the current file.
++            if (armed_total_ != bytes_expected) {
++                armed_total_ = bytes_expected;
++                // Arm with the current file's name so the very first frame is
++                // labelled; SetLabel() takes over for subsequent files.
++                armed_file_ = file;
++                adbglue::ProgressArm(file, bytes_expected);
++            }
++            if (file != armed_file_) {
++                armed_file_ = file;
++                adbglue::ProgressSetLabel(file);
++            }
++            adbglue::ProgressUpdate(bytes_transferred);
++        } else {
++            // Single-file transfer: its own bar, its own total.
++            if (file != armed_file_) {
++                armed_file_ = file;
++                armed_total_ = file_total_bytes;
++                adbglue::ProgressArm(file, file_total_bytes);
++            }
++            adbglue::ProgressUpdate(file_copied_bytes);
 +        }
 +
          auto now = std::chrono::steady_clock::now();
          if (now < last_progress_time + kProgressReportInterval) {
              return;
-@@ -199,7 +210,12 @@ struct TransferLedger {
+@@ -199,7 +247,12 @@ struct TransferLedger {
              }
          }
          if (output != last_progress_str) {
@@ -290,7 +334,7 @@ index 11dde9c..b9c4edc 100644
              last_progress_str = std::move(output);
              last_progress_time = now;
          }
-@@ -218,6 +234,9 @@ struct TransferLedger {
+@@ -218,6 +271,9 @@ struct TransferLedger {
             << direction_str << ", " << files_skipped << " skipped.";
          ss << TransferRate();
  
@@ -300,17 +344,6 @@ index 11dde9c..b9c4edc 100644
          lp.Print(ss.str(), LinePrinter::LineType::INFO);
          lp.KeepInfoLine();
      }
-@@ -303,6 +322,10 @@ class SyncConnection {
-     void RecordBytesTransferred(size_t bytes) {
-         current_ledger_.bytes_transferred += bytes;
-         global_ledger_.bytes_transferred += bytes;
-+        // MeowArchMobile: every transfer path funnels through here (v1, v2,
-+        // brotli/lz4/zstd, dry-run excluded by its callers), so this single
-+        // hook keeps the bar in step without touching each loop.
-+        adbglue::ProgressUpdate(current_ledger_.bytes_transferred);
-     }
- 
-     void RecordFileSent(std::string from, std::string to) {
 diff --git a/client/main.cpp b/client/main.cpp
 index 50a60a7..1cb0b97 100644
 --- a/client/main.cpp
