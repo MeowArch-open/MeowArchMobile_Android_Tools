@@ -106,7 +106,7 @@ index 6b20151..c1bd2dd 100644
      if (error != 0) {
          fprintf(stderr, ": %s", strerror(error));
 diff --git a/client/commandline.cpp b/client/commandline.cpp
-index 5cd3ab6..0ed6817 100644
+index 5cd3ab6..5a42e8f 100644
 --- a/client/commandline.cpp
 +++ b/client/commandline.cpp
 @@ -65,6 +65,8 @@
@@ -138,7 +138,7 @@ index 5cd3ab6..0ed6817 100644
      fprintf(stdout, "%s\n", adb_version().c_str());
      // clang-format off
      fprintf(stdout,
-@@ -1496,6 +1511,45 @@ static int process_remount_or_verity_service(const int argc, const char** argv)
+@@ -1496,6 +1511,67 @@ static int process_remount_or_verity_service(const int argc, const char** argv)
      }
  }
  
@@ -157,34 +157,56 @@ index 5cd3ab6..0ed6817 100644
 +        size_t nl = result.find('\n', start);
 +        std::string line = result.substr(start, nl == std::string::npos ? std::string::npos
 +                                                                      : nl - start);
-+        size_t tab = line.find('\t');
-+        if (tab == std::string::npos) {
++        // Two layouts come back from the server: plain `devices` sends
++        // "<serial>\t<state>", `devices -l` sends "<serial><padding>device
++        // transport_id:N ...". Split on the first run of whitespace either way,
++        // so both get coloured and neither loses its original spacing.
++        size_t sep = line.find_first_of(" \t");
++        if (sep == std::string::npos) {
 +            printf("%s\n", line.c_str());
 +        } else {
-+            std::string serial = line.substr(0, tab);
-+            std::string rest = line.substr(tab + 1);
-+            size_t sp = rest.find(' ');
-+            std::string state = rest.substr(0, sp);
-+            std::string tail = sp == std::string::npos ? "" : rest.substr(sp);
-+            fbcolor::C c = fbcolor::C::Dim;
-+            if (state == "device") c = fbcolor::C::Green;
-+            else if (state == "unauthorized" || state == "offline" || state == "recovery" ||
-+                     state == "sideload" || state == "bootloader")
-+                c = fbcolor::C::Yellow;
-+            printf("%s\t%s%s%s%s\n", serial.c_str(),
-+                   fbcolor::Code(c), state.c_str(), fbcolor::Code(fbcolor::C::Reset),
-+                   tail.c_str());
++            std::string serial = line.substr(0, sep);
++            size_t state_beg = line.find_first_not_of(" \t", sep);
++            if (state_beg == std::string::npos) {
++                printf("%s\n", line.c_str());
++            } else {
++                size_t state_end = line.find_first_of(" \t", state_beg);
++                std::string state = line.substr(state_beg, state_end == std::string::npos
++                                                              ? std::string::npos
++                                                              : state_end - state_beg);
++                fbcolor::C c = fbcolor::C::Dim;
++                if (state == "device") c = fbcolor::C::Green;
++                else if (state == "unauthorized" || state == "offline" ||
++                         state == "recovery" || state == "sideload" ||
++                         state == "bootloader")
++                    c = fbcolor::C::Yellow;
++                // Print the original bytes around the state word verbatim (the
++                // padding IS part of the layout), inserting only the escapes.
++                fwrite(line.data(), 1, state_beg, stdout);
++                fputs(fbcolor::Code(c), stdout);
++                fwrite(state.data(), 1, state.size(), stdout);
++                fputs(fbcolor::Code(fbcolor::C::Reset), stdout);
++                if (state_end != std::string::npos) {
++                    fputs(line.c_str() + state_end, stdout);
++                }
++                putchar('\n');
++            }
 +        }
 +        if (nl == std::string::npos) break;
 +        start = nl + 1;
 +    }
++    // Upstream prints this listing through adb_query_command, which does
++    // printf("%s\n", result) on a string that already ends in a newline — so
++    // the output carries one trailing blank line. Reproduce it exactly: piped
++    // output must be byte-identical, and scripts do tail that line.
++    putchar('\n');
 +    return 0;
 +}
 +
  static int adb_query_command(const std::string& command) {
      std::string result;
      std::string error;
-@@ -1770,8 +1824,11 @@ int adb_commandline(int argc, const char** argv) {
+@@ -1770,8 +1846,11 @@ int adb_commandline(int argc, const char** argv) {
          if (!adb_check_server_version(&error)) {
              error_exit("failed to check server version: %s", error.c_str());
          }
@@ -198,7 +220,7 @@ index 5cd3ab6..0ed6817 100644
      } else if (!strcmp(argv[0], "transport-id")) {
          TransportId transport_id;
          std::string error;
-@@ -2165,6 +2222,19 @@ int adb_commandline(int argc, const char** argv) {
+@@ -2165,6 +2244,19 @@ int adb_commandline(int argc, const char** argv) {
  
      /* "adb /?" is a common idiom under Windows */
      else if (!strcmp(argv[0], "--help") || !strcmp(argv[0], "help") || !strcmp(argv[0], "/?")) {

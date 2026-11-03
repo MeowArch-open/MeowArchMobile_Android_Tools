@@ -101,6 +101,40 @@ else
     case "$D" in *"127.0.0.1:$PORT"*device*) ok "devices lists the device" ;; *) bad "devices: $D" ;; esac
     SER="127.0.0.1:$PORT"
 
+    # devices -l colouring must not disturb the layout: on a pty the state word
+    # gains escapes, and everything else (serial, the padding that upstream uses
+    # instead of a tab, "transport_id:N") stays byte-for-byte. On a pipe there
+    # are no escapes at all and the output is byte-identical to plain devices -l.
+    script -q -c "$ADB -s $SER devices -l" "$TMP/dev.txt" >/dev/null 2>&1
+    LINE="$(tr -d '\r' < "$TMP/dev.txt" | grep -a "^$SER" | head -1)"
+    # Strongest form of the check: strip the escapes and the pty line must be
+    # identical to the pipe line, i.e. colouring changes nothing about layout.
+    STRIPPED="$(printf '%s' "$LINE" | sed 's/\x1b\[[0-9;]*m//g')"
+    PIPED="$("$ADB" -s "$SER" devices -l | grep -a "^$SER" | head -1)"
+    if [ "$STRIPPED" = "$PIPED" ]; then
+        ok "devices -l layout unchanged by colouring"
+    else
+        bad "devices -l layout: pty='$STRIPPED' pipe='$PIPED'"
+    fi
+    tr -d '\r' < "$TMP/dev.txt" | grep -a "^$SER" | grep -q $'\033' \
+        && ok "devices -l colours the state on a pty" || bad "devices -l had no colour on a pty"
+    PLAIN="$("$ADB" -s "$SER" devices -l)"
+    case "$PLAIN" in
+        *$'\033'*) bad "devices -l leaked escapes into a pipe" ;;
+        *"transport_id:"*) ok "devices -l clean on a pipe" ;;
+        *) bad "devices -l lost its fields on a pipe: $PLAIN" ;;
+    esac
+    # Upstream prints the listing with a trailing blank line (it printf's a
+    # newline onto a string that already ends in one). Scripts capture this
+    # output, so the exact byte count matters: the last two bytes must both be
+    # newlines, not just one.
+    TAIL2="$("$ADB" -s "$SER" devices | tail -c 2 | od -An -tx1 | tr -d ' ')"
+    if [ "$TAIL2" = "0a0a" ]; then
+        ok "devices ends with upstream's trailing blank line"
+    else
+        bad "devices trailing bytes are $TAIL2, expected 0a0a"
+    fi
+
     # shell v2 (pty + exit status)
     S="$("$ADB" -s "$SER" shell 'echo shell-ok; exit 7' 2>&1)"; RC=$?
     if [ "$S" = "shell-ok" ] && [ "$RC" = "7" ]; then ok "shell: output + exit code 7"; else bad "shell: '$S' rc=$RC"; fi
