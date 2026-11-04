@@ -127,6 +127,7 @@ add_library(adb_glue STATIC
     src/adb_i18n_ja.cpp
     src/adb_help.cpp
     src/adb_completion.cpp
+    src/adb_suggest.cpp
     src/adbglue.cpp
 )
 target_include_directories(adb_glue PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -142,6 +143,14 @@ target_compile_options(adb_glue PRIVATE
 add_executable(test_progress_layout tests/test_progress_layout.cpp)
 target_link_libraries(test_progress_layout PRIVATE adb_glue)
 set_target_properties(test_progress_layout PROPERTIES EXCLUDE_FROM_ALL TRUE)
+
+# The Did-you-want scorer. The CLI checks in scripts/test-adb.sh prove the hook
+# fires; this one enumerates the scoring rules in BOTH directions (typos must
+# resolve, foreign words must not, known commands must not suggest themselves),
+# which is where a wrong-but-confident hint would come from.
+add_executable(test_suggest tests/test_suggest.cpp)
+target_link_libraries(test_suggest PRIVATE adb_glue)
+set_target_properties(test_suggest PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
 # ------------------------------------------------------------ boringssl
 set(BSSL_SRC "${BSSL}/src")

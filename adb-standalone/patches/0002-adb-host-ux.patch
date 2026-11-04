@@ -65,19 +65,20 @@ index e2da4b5..1c15c72 100644
      std::string service_name;
      std::string service_type;
 diff --git a/client/adb_client.cpp b/client/adb_client.cpp
-index 6b20151..c1bd2dd 100644
+index 6b20151..420c834 100644
 --- a/client/adb_client.cpp
 +++ b/client/adb_client.cpp
-@@ -16,6 +16,8 @@
+@@ -16,6 +16,9 @@
  
  #define TRACE_TAG ADB
  
 +#include "adb_i18n.h"
++#include "adbglue.h"
 +#include "fb_color.h"
  #include "sysdeps.h"
  #include "adb_client.h"
  
-@@ -449,9 +451,24 @@ const std::optional<FeatureSet>& adb_get_feature_set(std::string* error) {
+@@ -449,9 +452,24 @@ const std::optional<FeatureSet>& adb_get_feature_set(std::string* error) {
  
  [[noreturn]] static void error_exit_va(int error, const char* fmt, va_list va) {
      fflush(stdout);
@@ -105,6 +106,23 @@ index 6b20151..c1bd2dd 100644
  
      if (error != 0) {
          fprintf(stderr, ": %s", strerror(error));
+@@ -460,6 +478,16 @@ const std::optional<FeatureSet>& adb_get_feature_set(std::string* error) {
+     putc('\n', stderr);
+     fflush(stderr);
+ 
++    // MeowArchMobile: "Did you want 'shell'?" after an unknown command.
++    // Hooked here, at the single error funnel, with the ENGLISH text (|buf|,
++    // not the localized string) so the matcher sees one spelling in every
++    // language, and after the newline so the hint cannot split the error line.
++    // Prints nothing unless a candidate is close enough. Upstream's only
++    // unrecognized-token path is this one message: the parser breaks out of its
++    // flag loop and treats the rest as a command, so an unknown option arrives
++    // here too ("unknown command --slott").
++    adbglue::MaybeHintUnknownCommand(buf);
++
+     exit(EXIT_FAILURE);
+ }
+ 
 diff --git a/client/adb_install.cpp b/client/adb_install.cpp
 index 566bdb5..0f2792a 100644
 --- a/client/adb_install.cpp

@@ -34,6 +34,15 @@ int ShowHelp(const std::string& version);
 int ShowHelpSection(const std::string& version, const char* section);
 int ListHelpSections();
 
+// "Did you want 'shell'?" — printed after an unknown command/option error.
+//
+// |message| is the ENGLISH text adb formatted ("unknown command sheel"), which
+// is what makes this work in every language: the hook sits in error_exit_va
+// before translation, and upstream's own error line is left byte-identical.
+// Nothing is printed when no candidate is close enough, so a wholly foreign
+// word gets the terse upstream error and no wrong guess.
+void MaybeHintUnknownCommand(const std::string& message);
+
 // Print a completion script for |shell| ("bash", "zsh" or "fish"), completing
 // |command| as the program name. Returns 0, or 2 with a diagnostic on stderr
 // when the shell is unknown.

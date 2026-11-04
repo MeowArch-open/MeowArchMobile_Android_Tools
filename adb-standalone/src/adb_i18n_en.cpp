@@ -70,6 +70,9 @@ const MsgEntry kEnTable[] = {
     {kHKillServer, "kill-server\tkill the server if it is running"},
     // -- runtime ---------------------------------------------------------------
     {kErrPrefix, "adb: error: "},
+    {kDidYouMean, "Did you want '%s'?"},
+    {kDidYouMeanList, "Did you want one of: %s?"},
+    {kRunHelp, "Run '%s help' for usage."},
     // -- MeowArchMobile options ------------------------------------------------
     {kOLang, "--lang=CODE\tSet interface language (see --list-langs)."},
     {kOListLangs, "--list-langs\tList available interface languages and exit."},

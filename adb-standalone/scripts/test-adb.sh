@@ -309,6 +309,89 @@ else
     fi
 
     # ------------------------------------------------------------------
+    # 2a2. "Did you want X?" for an unknown command/option
+    # ------------------------------------------------------------------
+    # Upstream stops at "unknown command sheel". The hint is the same feature
+    # mfastboot has, and it shares the completion vocabulary, so a command that
+    # completes also suggests. Three things matter and are easy to get wrong:
+    #   * the exit code and upstream's own first line stay byte-identical;
+    #   * a foreign word gets NO hint (a wrong guess trains the user to ignore
+    #     the line, which is worse than upstream's silence);
+    #   * the hint is localized, and plain text when piped.
+    OUT="$("$ADB" --lang=en sheel 2>&1)"; RC=$?
+    if [ $RC -eq 1 ] && [ "$(printf '%s' "$OUT" | head -1)" = "adb: unknown command sheel" ] \
+            && printf '%s' "$OUT" | grep -q "Did you want 'shell'?"; then
+        ok "unknown command offers 'shell' (rc and upstream line unchanged)"
+    else
+        bad "unknown-command hint: rc=$RC out=$(printf '%s' "$OUT" | tr '\n' '|')"
+    fi
+    # The second line names how to get help, and echoes the name the user typed.
+    if printf '%s' "$OUT" | grep -q "help' for usage"; then
+        ok "the hint points at help"
+    else
+        bad "no help pointer: $OUT"
+    fi
+    # An unknown OPTION reaches the same funnel: adb's parser breaks out of its
+    # flag loop and treats the rest as a command, so it reports
+    # "unknown command --slott". That one spelling is why one hook covers both.
+    # (--slot is fastboot's; adb's long options are the ones below.)
+    OUT="$("$ADB" --lang=en --one-devic 2>&1)"
+    if printf '%s' "$OUT" | grep -q "Did you want '--one-device'"; then
+        ok "unknown option suggests '--one-device'"
+    else
+        bad "option hint: $(printf '%s' "$OUT" | tr '\n' '|')"
+    fi
+    OUT="$("$ADB" --lang=en --no-colour 2>&1)"
+    if printf '%s' "$OUT" | grep -q "Did you want '--no-color'"; then
+        ok "our own long option typo is suggested too"
+    else
+        bad "our option hint: $(printf '%s' "$OUT" | tr '\n' '|')"
+    fi
+    # A foreign word must get NO suggestion at all.
+    OUT="$("$ADB" --lang=en xyzzy 2>&1)"
+    if [ "$(printf '%s\n' "$OUT" | grep -c '')" -eq 1 ]; then
+        ok "a foreign word gets no hint (only upstream's error)"
+    else
+        bad "foreign word produced extra lines: $(printf '%s' "$OUT" | tr '\n' '|')"
+    fi
+    # A known command must not be disturbed: no hint may appear on a real error.
+    OUT="$("$ADB" --lang=en -s no-such-device-xyz shell 2>&1)"
+    if printf '%s' "$OUT" | grep -q "Did you want"; then
+        bad "a known command's error got a suggestion: $(printf '%s' "$OUT" | tr '\n' '|')"
+    else
+        ok "known commands get no suggestion on their own errors"
+    fi
+    # Localized, in every shipped language, and plain text on a pipe.
+    for L in zh_CN:您是否想输入 zh_TW:您是否想輸入 ja:のことですか; do
+        code="${L%%:*}"; want="${L#*:}"
+        OUT="$("$ADB" --lang="$code" sheel 2>&1)"
+        case "$OUT" in
+            *"$want"*) ok "hint localized in $code" ;;
+            *) bad "hint not localized in $code: $(printf '%s' "$OUT" | tr '\n' '|')" ;;
+        esac
+        case "$OUT" in
+            *$'\033'*) bad "escape bytes in piped hint ($code)" ;;
+            *) ok "piped hint has no escapes ($code)" ;;
+        esac
+    done
+    # On a pty the hint is yellow; on a pipe it must not be. Same contract the
+    # coloured error prefix already follows.
+    TERM=xterm-256color script -q -c "$ADB --lang=en sheel" "$TMP/hint-pty.txt" >/dev/null 2>&1
+    if grep -aq $'\033\[33m' "$TMP/hint-pty.txt"; then
+        ok "the hint is coloured on a pty"
+    else
+        bad "the hint had no colour on a pty"
+    fi
+    # The scorer itself: thresholds in both directions (typos resolve, foreign
+    # words do not, nothing suggests itself) — 33 cases.
+    if cmake --build "$HERE/build-native" --target test_suggest -j"$(nproc)" >/dev/null 2>&1 \
+            && "$HERE/build-native/test_suggest" > "$TMP/sug.out" 2>&1; then
+        ok "suggest scorer ($(grep -oE '[0-9]+ passed' "$TMP/sug.out" | head -1), 0 failed)"
+    else
+        bad "suggest scorer"; sed 's/^/      /' "$TMP/sug.out" | grep FAIL | head -6
+    fi
+
+    # ------------------------------------------------------------------
     # 2b. pipelined recursive pull (listing + small-file batching)
     # ------------------------------------------------------------------
     # `pull: building file list...` used to cost one round trip per directory,

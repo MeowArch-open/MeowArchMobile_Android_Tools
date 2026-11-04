@@ -75,6 +75,9 @@
     X(kHKillServer)                                                                            \
     /* runtime: errors and hints */                                                            \
     X(kErrPrefix)                                                                              \
+    X(kDidYouMean)                                                                             \
+    X(kDidYouMeanList)                                                                         \
+    X(kRunHelp)                                                                                \
     /* MeowArchMobile section in help */                                                       \
     X(kSecMeowArch)                                                                            \
     X(kSecUnknown)                                                                             \

@@ -15,6 +15,8 @@
  */
 #include "adb_completion.h"
 
+#include "adb_suggest.h"
+
 #include <ctype.h>
 #include <string.h>
 
@@ -38,25 +40,13 @@ std::string Join(const std::vector<std::string>& v, const char* sep = " ") {
     return out;
 }
 
-std::vector<std::string> CommandList() {
-    std::vector<std::string> out;
-    for (const auto& c : adbhelp::Commands()) {
-        if (std::find(out.begin(), out.end(), c.name) == out.end()) out.push_back(c.name);
-    }
-    // wait-for[-TRANSPORT]-STATE... is a pattern, not a literal; list the states
-    // the way upstream's own completion does.
-    static const char* kWaitStates[] = {"device", "recovery", "rescue", "sideload",
-                                        "bootloader", "disconnect"};
-    for (const char* st : kWaitStates) {
-        out.push_back(std::string("wait-for-") + st);
-        out.push_back(std::string("wait-for-usb-") + st);
-        out.push_back(std::string("wait-for-local-") + st);
-        out.push_back(std::string("wait-for-any-") + st);
-    }
-    return out;
-}
+// Both vocabularies come from adb_suggest, which builds them from the same help
+// table `adb help` renders. One source of truth for completion AND for
+// Did-you-want: a command that completes but cannot be suggested (or the
+// reverse) is exactly the drift that sharing the list prevents.
+const std::vector<std::string>& CommandList() { return adbsuggest::Commands(); }
 
-std::string OptionList() { return Join(adbhelp::Options()); }
+std::string OptionList() { return Join(adbsuggest::Options()); }
 
 std::string LangList() {
     size_t n = 0;
@@ -77,11 +67,7 @@ const char* kRebootTargets = "bootloader recovery sideload fastboot";
 const char* kSyncTargets = "all data system vendor product system_ext odm oem";
 const char* kMdnsSubs = "check services resolve";
 const char* kForwardSubs = "list remove remove-all";
-const char* kWaitStates = "device recovery rescue sideload bootloader disconnect";
 const char* kCompression = "none any fast best lz4 zstd brotli";
-// `adb shell` subcommands worth completing specially; anything else falls back
-// to the device's own executable list.
-const char* kShellSubs = "dumpsys am pm ls cat settings getprop svc wm input cmd";
 
 // ===========================================================================
 // bash

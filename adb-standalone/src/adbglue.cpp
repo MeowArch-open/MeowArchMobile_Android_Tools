@@ -11,16 +11,90 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <string>
+#include <vector>
+
+#include <android-base/stringprintf.h>
 
 #include "adb_completion.h"
 #include "adb_help.h"
 #include "adb_progress.h"
+#include "adb_suggest.h"
 #include "fb_color.h"
 
 namespace adbglue {
+namespace {
+
+// The name the user actually typed, so the "run '<name> help'" hint matches
+// their invocation (the package installs two: madb and adb-meowarch). Set from
+// argv[0] in EarlyInit; the fallback keeps the hint sensible if it never ran.
+std::string g_program_name = "madb";
+
+// npos must not be compared with std::max: it is SIZE_MAX, so max() would pick
+// the "absent" sentinel over a real separator and return the whole path.
+// (Caught by `madb sheel` printing "Run './build-native/adb help'".)
+std::string Basename(const std::string& path) {
+    size_t slash = path.find_last_of('/');
+    size_t bslash = path.find_last_of('\\');
+    size_t cut = (slash == std::string::npos)   ? bslash
+                 : (bslash == std::string::npos) ? slash
+                                                 : std::max(slash, bslash);
+    return (cut == std::string::npos) ? path : path.substr(cut + 1);
+}
+
+std::string QuoteList(const std::vector<std::string>& cands) {
+    std::string out;
+    for (size_t i = 0; i < cands.size(); i++) {
+        if (i) out += ", ";
+        out += "'";
+        out += cands[i];
+        out += "'";
+    }
+    return out;
+}
+
+// Renders one hint line in yellow, matching better_fastboot's phrasing so the
+// two tools read as one family.
+void PrintHint(const std::string& text) {
+    fprintf(stderr, "%s\n", fbcolor::Paint(fbcolor::C::Yellow, text).c_str());
+}
+
+}  // namespace
+
+void MaybeHintUnknownCommand(const std::string& message) {
+    // Upstream's only unrecognized-token path is this one message: adb's parser
+    // `break`s out of its flag loop and treats whatever is left as a command,
+    // so an unknown OPTION also arrives here (as "unknown command --slott").
+    // Matching the English source text keeps the hook at the single error
+    // funnel and leaves every other error alone.
+    static const char kPrefix[] = "unknown command ";
+    if (message.compare(0, sizeof(kPrefix) - 1, kPrefix) != 0) return;
+    const std::string token = message.substr(sizeof(kPrefix) - 1);
+    if (token.empty()) return;
+
+    // A token starting with '-' can only be an option, so score it against the
+    // option vocabulary; anything else is scored as a command. Guessing across
+    // both would offer "-s" for a mistyped command, which is never useful.
+    const bool is_option = token[0] == '-';
+    auto cands = adbsuggest::Suggest(token, is_option ? adbsuggest::Kind::Option
+                                                      : adbsuggest::Kind::Command,
+                                     2);
+    if (cands.empty()) return;
+
+    if (cands.size() == 1) {
+        PrintHint(android::base::StringPrintf(_(adbi18n::kDidYouMean), cands[0].c_str()));
+    } else {
+        PrintHint(android::base::StringPrintf(_(adbi18n::kDidYouMeanList),
+                                              QuoteList(cands).c_str()));
+    }
+    PrintHint(fbcolor::Paint(fbcolor::C::Dim,
+                             android::base::StringPrintf(_(adbi18n::kRunHelp),
+                                                         g_program_name.c_str())));
+}
 
 int EarlyInit(int argc, char** argv) {
+    if (argc > 0 && argv[0] && argv[0][0]) g_program_name = Basename(argv[0]);
     // Scan for our own flags before anything else runs: getopt in adb's main()
     // rejects unknown options, and help/errors printed later must already know
     // the locale and color state.
