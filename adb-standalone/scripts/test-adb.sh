@@ -433,6 +433,41 @@ PYEOF
     else
         bad "byte-budget splitting: '$BT_BATCHES' groups (want >= 3)"
     fi
+    # The bar over a batched directory pull. The tree above contains symlinks,
+    # whose listed size is the target path's length while the pull fetches the
+    # target's bytes, so the batch counter legitimately runs a few percent past
+    # its total — upstream's own code documents this and prints "?" past 100%.
+    # Our bar clamps the percentage at 100 and shows the real counter, so what
+    # must hold is narrower and stricter: no frame wider than the terminal, and
+    # no percentage above 100.
+    rm -rf "$TMP/bar-out"
+    TERM=xterm-256color script -q -c "$ADB -s $SER pull /tmp/tree $TMP/bar-out" \
+        "$TMP/bar.txt" >/dev/null 2>&1
+    BAR_BAD="$(tr '\r' '\n' < "$TMP/bar.txt" \
+        | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' \
+        | grep -aE '\[[#>-]+\]' \
+        | awk -v cols="$(tput cols 2>/dev/null || echo 80)" '
+            { line=$0; w=length(line);
+              if (match(line, /[0-9]+%/)) {
+                pct=substr(line, RSTART, RLENGTH-1)+0;
+                if (pct > 100) print "pct=" pct ": " line;
+              } }')"
+    if [ -z "$BAR_BAD" ]; then
+        ok "pull bar never reports over 100% despite symlink overshoot"
+    else
+        bad "pull bar over 100%: $(printf '%s' "$BAR_BAD" | head -1 | cut -c1-70)"
+    fi
+    BAR_COLS="$(tr '\r' '\n' < "$TMP/bar.txt" \
+        | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' \
+        | grep -aE '\[[#>-]+\]' \
+        | awk '{ print length($0) }' | sort -un | tail -1)"
+    # script's pty is 0x0 unless the parent has a real size, so the bar falls
+    # back to its 80-column default; the invariant is that no frame exceeds it.
+    if [ "${BAR_COLS:-0}" -le 80 ]; then
+        ok "no pull bar frame exceeds the terminal width (max ${BAR_COLS:-0} cols)"
+    else
+        bad "pull bar frame is $BAR_COLS columns wide"
+    fi
     "$ADB" -s "$SER" shell rm -rf /tmp/tree /tmp/long /tmp/bt >/dev/null 2>&1
 
     # ------------------------------------------------------------------
