@@ -19,6 +19,14 @@ bad()  { echo "  FAIL $*"; FAIL=$((FAIL+1)); }
 skip() { echo "  skip $*"; SKIP=$((SKIP+1)); }
 
 [ -x "$ADB" ] || { echo "no adb binary at $ADB"; exit 2; }
+# Resolve both binaries to ABSOLUTE paths. The completion drives cd into a
+# scratch directory and run the command as COMP_WORDS[0], so a relative path
+# stops resolving the moment the working directory changes — which is exactly
+# how CI (which passes "build-native/adb") saw every device-side completion
+# check return nothing while the same suite passed by hand with the default,
+# absolute path.
+ADB="$(cd "$(dirname "$ADB")" && pwd)/$(basename "$ADB")"
+ADBD="$(cd "$(dirname "$ADBD")" 2>/dev/null && pwd)/$(basename "$ADBD")"
 
 # Isolated $HOME so the server socket, keys and logs never touch the user's.
 TMP="$(mktemp -d /tmp/adbtest.XXXXXX)"
@@ -487,9 +495,17 @@ DRIVE
     # function with a capturing compadd stub; the serial lets the device-side
     # checks run for real.
     if command -v zsh >/dev/null 2>&1; then
+        # The zsh drive calls the completion function with words[1] = "adb-m",
+        # so the device-side helpers run `adb-m` from PATH exactly as a real
+        # shell would. Put a symlink there, the same way the fish drive does;
+        # without it every device query silently returns nothing (a completion
+        # that found no device is indistinguishable from one that found no
+        # candidates).
+        mkdir -p "$TMP/zshbin"
+        ln -sf "$ADB" "$TMP/zshbin/adb-m"
         "$ADB" --shell-completion=zsh adb-m > "$TMP/comp-zsh-adbm"
-        if zsh -f "$HERE/scripts/test-completions.zsh" "$TMP/comp-zsh-adbm" "$SER" \
-                > "$TMP/zsh.out" 2>&1; then
+        if PATH="$TMP/zshbin:$PATH" zsh -f "$HERE/scripts/test-completions.zsh" \
+                "$TMP/comp-zsh-adbm" "$SER" "$ADB" > "$TMP/zsh.out" 2>&1; then
             ok "zsh functional drive ($(grep -oE '[0-9]+ passed' "$TMP/zsh.out" | head -1))"
         else
             bad "zsh functional drive"; sed 's/^/      /' "$TMP/zsh.out" | tail -8

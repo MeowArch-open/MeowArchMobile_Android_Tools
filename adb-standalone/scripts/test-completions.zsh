@@ -15,9 +15,13 @@
 emulate -L zsh
 setopt no_unset_err 2>/dev/null
 
-local script=${1:?usage: test-completions.zsh <completion-script> [serial]}
+local script=${1:?usage: test-completions.zsh <completion-script> [serial] [adb-binary]}
 [[ -f $script ]] || { print "no such file: $script"; exit 2 }
 local serial=${2:-}
+# The completion's device-side helpers run `${words[1]}`, i.e. `adb-m`, which the
+# caller must have put on PATH (test-adb.sh symlinks it into a scratch bin).
+# This binary is only for the harness's own probing below.
+local adb_bin=${3:-adb-m}
 
 # The script must be named _adb-m for autoload, and it registers both command
 # names via its #compdef line.
@@ -97,7 +101,15 @@ else
   try "pull REMOTE -> paths"   "/"              "pull" "/"
   try "shell -> device cmds"   "ls"             "shell" ""
   try "pm list -> kinds"       "packages"       "shell" "pm" "list" ""
-  try "uninstall -> packages"  "."              "uninstall" ""
+  # `pm` is part of Android's framework, not of adbd: a glibc adbd has no
+  # package manager, so an empty package list there is correct and asserting on
+  # it would fail for a reason that has nothing to do with the completion.
+  if $adb_bin -s $serial shell 'command -v pm' >/dev/null 2>&1; then
+    try "uninstall -> packages"  "."            "uninstall" ""
+  else
+    print "  skip uninstall -> packages (device has no pm)"
+    skip+=1
+  fi
 fi
 
 print "== zsh completion: $pass passed, $fail failed, $skip skipped =="
