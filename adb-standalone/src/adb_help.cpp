@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include <string>
+#include <vector>
 
 #include "fb_color.h"
 
@@ -138,7 +139,17 @@ const char* kEnvironment =
     " $ANDROID_SERIAL          serial number to connect to (see -s)\n"
     " $ANDROID_LOG_TAGS        tags to be used by logcat (see logcat --help)\n"
     " $ADB_LOCAL_TRANSPORT_MAX_PORT max emulator scan port (default 5585, 16 emus)\n"
-    " $ADB_MDNS_AUTO_CONNECT   comma-separated list of mdns services to allow auto-connect\n";
+    " $ADB_MDNS_AUTO_CONNECT   comma-separated list of mdns services to allow auto-connect\n"
+    "\n"
+    " MeowArchMobile additions:\n"
+    " $NO_PROGRESS             disable the transfer progress bar (same as --no-progress)\n"
+    " $NO_COLOR                disable colored output (same as --no-color)\n"
+    " $ADB_SYNC_LIST_WINDOW    directories listed per round trip when pulling a\n"
+    "                          directory [default=64, min=1; 1 is upstream's\n"
+    "                          sequential behaviour]\n"
+    " $ADB_SYNC_RECV_WINDOW    small files fetched per round trip when pulling a\n"
+    "                          directory [default=64, min=1]\n"
+    " $ADB_SYNC_STATS          print sync request/batch statistics to stderr\n";
 
 const char* kDocsLine =
     "Online documentation: https://android.googlesource.com/platform/packages/modules/adb/"
@@ -289,6 +300,90 @@ int ShowSection(const char* version, const char* name) {
         break;
     }
     return 0;
+}
+
+// --------------------------------------------------------------------------
+// Accessors for the table. The completion generator builds its vocabulary from
+// these, so `adb help` and what the shell completes cannot drift apart.
+
+namespace {
+
+// Split one entry's English text ("cmd cell\tdescription") into a bare command
+// name, its argument cell and the description. Returns false when the entry has
+// no tab (a header-ish line) or is empty.
+bool ParseEntry(const char* text, std::string* name, std::string* args,
+                std::string* desc) {
+    if (!text || !*text) return false;
+    std::string s(text);
+    size_t tab = s.find('\t');
+    if (tab == std::string::npos) return false;
+    std::string cmd = s.substr(0, tab);
+    *desc = s.substr(tab + 1);
+    // A newline inside the description continues it on the next line; keep the
+    // first line only for a completion description.
+    size_t nl = desc->find('\n');
+    if (nl != std::string::npos) *desc = desc->substr(0, nl);
+
+    size_t sp = cmd.find_first_of(" \t");
+    if (sp == std::string::npos) {
+        *name = cmd;
+        *args = "";
+    } else {
+        *name = cmd.substr(0, sp);
+        *args = cmd.substr(sp + 1);
+    }
+    // Normalize an option to its bare spelling: "--lang=CODE" -> "--lang",
+    // "--set-active[=SLOT]" -> "--set-active".
+    size_t cut = name->find_first_of("=[<");
+    if (cut != std::string::npos) *name = name->substr(0, cut);
+    return !name->empty();
+}
+
+const char* SectionKeyword(Msg section) {
+    for (const auto& s : kSections) {
+        if (s.title == section) return s.keyword;
+    }
+    return "";
+}
+
+}  // namespace
+
+std::vector<CommandInfo> Commands() {
+    std::vector<CommandInfo> out;
+    for (const auto& row : kEntries) {
+        const char* text = adbi18n::T(row.entry);
+        std::string name, args, desc;
+        if (!ParseEntry(text, &name, &args, &desc)) continue;
+        if (name[0] == '-') continue;  // an option, not a command
+        CommandInfo ci;
+        ci.name = name;
+        ci.args = args;
+        ci.desc = desc;
+        ci.section = SectionKeyword(row.section);
+        out.push_back(std::move(ci));
+    }
+    return out;
+}
+
+std::vector<std::string> Options() {
+    std::vector<std::string> out;
+    // The five MeowArchMobile options are table entries.
+    for (const auto& row : kEntries) {
+        std::string name, args, desc;
+        if (!ParseEntry(adbi18n::T(row.entry), &name, &args, &desc)) continue;
+        if (name.size() > 2 && name.rfind("--", 0) == 0) out.push_back(name);
+    }
+    // Plus upstream's short flags, which are documented in the options block
+    // rather than as entries. These are spellings, never translated.
+    static const char* kShort[] = {"-a", "-d", "-e", "-s", "-t", "-H", "-P", "-L", "-h"};
+    for (const char* f : kShort) out.push_back(f);
+    return out;
+}
+
+std::vector<std::string> SectionKeywords() {
+    std::vector<std::string> out;
+    for (const auto& s : kSections) out.push_back(s.keyword);
+    return out;
 }
 
 }  // namespace adbhelp

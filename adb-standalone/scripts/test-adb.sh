@@ -242,6 +242,306 @@ else
         bad "bar over-reported bytes: $(printf '%s' "$OVER" | head -2 | tr '\n' ' ')"
     fi
 
+    # ------------------------------------------------------------------
+    # 2a. the bar beyond push/pull: exec-out streams a size nobody knows
+    # ------------------------------------------------------------------
+    # backup/restore/exec-out have no total, so the bar renders bytes and speed
+    # only. Two rules that are easy to break:
+    #   * the payload must stay byte-exact when stdout is a pipe or a file, and
+    #     stderr must carry no escape bytes then either;
+    #   * when the payload goes to a TERMINAL (exec-out with no redirect), the
+    #     bar must be off — it would interleave with the stream it is counting.
+    "$ADB" -s "$SER" exec-out 'dd if=/dev/zero bs=1M count=6 2>/dev/null' > "$TMP/eo.bin" 2>"$TMP/eo.err"
+    if [ "$(stat -c%s "$TMP/eo.bin")" = "6291456" ] && [ ! -s "$TMP/eo.err" ]; then
+        ok "exec-out is byte-exact with no bar on a pipe"
+    else
+        bad "exec-out piped: $(stat -c%s "$TMP/eo.bin") bytes, stderr $(stat -c%s "$TMP/eo.err") bytes"
+    fi
+    # On a pty with stdout redirected to a file, the bar renders on stderr.
+    TERM=xterm-256color script -q -c \
+        "$ADB -s $SER exec-out 'dd if=/dev/zero bs=1M count=6 2>/dev/null' > $TMP/eo-pty.bin" \
+        "$TMP/eo-pty.txt" >/dev/null 2>&1
+    EO_FRAMES="$(tr '\r' '\n' < "$TMP/eo-pty.txt" | grep -acE 'MiB|KiB')"
+    if [ "${EO_FRAMES:-0}" -ge 2 ]; then
+        ok "exec-out streams an unknown-total bar ($EO_FRAMES frames on a pty)"
+    else
+        bad "exec-out bar: $EO_FRAMES frames"
+    fi
+    # No percentage may appear: a fraction of an unknown total is meaningless,
+    # and printing one is how a bar comes to lie.
+    if tr '\r' '\n' < "$TMP/eo-pty.txt" | grep -aE '\[[#>-]+\]' | grep -qaE '[0-9]+%'; then
+        bad "unknown-total bar printed a percentage"
+    else
+        ok "unknown-total bar shows no percentage"
+    fi
+    # Payload went to a file untouched, and every frame stayed inside 80 columns
+    # (script's pty has a 0x0 window, so the bar falls back to its 80 default).
+    if [ "$(stat -c%s "$TMP/eo-pty.bin")" = "6291456" ]; then
+        ok "exec-out payload intact with the bar on a pty"
+    else
+        bad "exec-out payload on a pty: $(stat -c%s "$TMP/eo-pty.bin") bytes"
+    fi
+    # Measure only real bar frames (a line carrying a "<num> <unit>" field):
+    # `script` writes its own header and footer into the same pty, and its
+    # header quotes the whole command line, which is easily over 80 columns.
+    WIDE="$(tr '\r' '\n' < "$TMP/eo-pty.txt" \
+        | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' \
+        | grep -aE '[0-9]+(\.[0-9])? (B|KiB|MiB|GiB|TiB)' \
+        | awk 'length($0)>80')"
+    if [ -z "$WIDE" ]; then ok "no exec-out bar frame exceeds the terminal width"
+    else bad "exec-out frame wider than the terminal: $(printf '%s' "$WIDE" | head -1 | cut -c1-60)"; fi
+    # With the payload going to the SAME pty, the bar must stay off.
+    TERM=xterm-256color script -q -c "$ADB -s $SER exec-out 'dd if=/dev/zero bs=1K count=8 2>/dev/null'" \
+        "$TMP/eo-same.txt" >/dev/null 2>&1
+    SAME="$(tr '\r' '\n' < "$TMP/eo-same.txt" | grep -acE '[0-9.]+ [KM]iB/s')"
+    if [ "${SAME:-0}" -eq 0 ]; then
+        ok "exec-out prints no bar when its payload goes to the terminal"
+    else
+        bad "exec-out barred over its own payload: $SAME frames"
+    fi
+
+    # ------------------------------------------------------------------
+    # 2b. pipelined recursive pull (listing + small-file batching)
+    # ------------------------------------------------------------------
+    # `pull: building file list...` used to cost one round trip per directory,
+    # and one more per file when the bytes moved, so a tree of many small
+    # directories spent minutes listing before transferring anything. Both
+    # phases now send a batch of requests in one write and read the answers back
+    # in order. Two things must hold: the result is byte-identical to the
+    # sequential walk, and the batching actually happened.
+    rm -rf "$TMP/tree" "$TMP/tree-out" "$TMP/tree-out-seq"
+    python3 - "$TMP/tree" <<'PYEOF'
+import os, sys
+base = sys.argv[1]
+# 60 directories x 3 files, plus symlinks (each needs a STAT to classify) and
+# one file large enough to be pulled outside any batch.
+for i in range(60):
+    d = os.path.join(base, "dir%02d" % (i // 10), "sub%02d" % (i % 10))
+    os.makedirs(d, exist_ok=True)
+    for j in range(3):
+        with open(os.path.join(d, "f%d.bin" % j), "wb") as f:
+            f.write(bytes((i + j) % 251 for _ in range(2048)))
+    if i % 4 == 0:
+        os.symlink("f0.bin", os.path.join(d, "link.bin"))
+os.makedirs(os.path.join(base, "big"), exist_ok=True)
+with open(os.path.join(base, "big", "large.bin"), "wb") as f:
+    f.write(os.urandom(9 * 1024 * 1024))
+PYEOF
+    "$ADB" -s "$SER" push "$TMP/tree" /tmp/ >/dev/null 2>&1
+
+    ADB_SYNC_STATS=1 "$ADB" -s "$SER" --no-progress pull /tmp/tree "$TMP/tree-out" >"$TMP/pull.txt" 2>&1
+    if diff -r "$TMP/tree" "$TMP/tree-out" >/dev/null 2>&1; then
+        ok "batched recursive pull is byte-identical (dirs, symlinks, one large file)"
+    else
+        bad "batched pull differs: $(diff -rq "$TMP/tree" "$TMP/tree-out" 2>&1 | head -3 | tr '\n' ' ')"
+    fi
+    # The large file must NOT be inside a batch (a big file queued behind a batch
+    # of small ones is the failure mode the size cap prevents), while the small
+    # ones must be: 180 files at a 64-file window is 3 groups, so far fewer
+    # groups than files means batching happened.
+    BATCHES="$(sed -n 's/^STATS recv: \([0-9]*\) batched.*/\1/p' "$TMP/pull.txt")"
+    if [ -n "$BATCHES" ] && [ "$BATCHES" -ge 1 ] && [ "$BATCHES" -lt 30 ]; then
+        ok "small files were batched ($BATCHES RECV groups for 180 files)"
+    else
+        bad "small-file batching: '$BATCHES' groups (want 1..29)"
+    fi
+    # Anchor the fields explicitly: `.*\([0-9]*\)` is greedy, so `.*` eats the
+    # digits and the capture group matches empty.
+    # Every directory must still be listed (the batch must not silently drop
+    # one), and the listings must have gone out in far fewer batches than
+    # directories — that is the pipelining. 61 directories, window 64: one or
+    # two batches, never 61.
+    LS="$(sed -n 's/^STATS listing: [0-9]* entries, [0-9.]* s, \([0-9]*\) LIST requests in \([0-9]*\) batches.*/\1 \2/p' "$TMP/pull.txt")"
+    set -- $LS
+    if [ "${1:-0}" -ge 61 ] && [ "${2:-999}" -lt 20 ]; then
+        ok "all directories listed in few batches ($1 LIST requests, $2 batches)"
+    else
+        bad "listing stats: '$LS' (want >= 61 requests in < 20 batches)"
+    fi
+    # Window=1 reproduces the old sequential behaviour; the tree must come out
+    # the same either way, which is the real correctness argument for the batch.
+    ADB_SYNC_LIST_WINDOW=1 ADB_SYNC_RECV_WINDOW=1 "$ADB" -s "$SER" --no-progress \
+        pull /tmp/tree "$TMP/tree-out-seq" >/dev/null 2>&1
+    if diff -r "$TMP/tree-out" "$TMP/tree-out-seq" >/dev/null 2>&1; then
+        ok "batched and sequential pulls agree"
+    else
+        bad "batched and sequential pulls differ"
+    fi
+    # Long path names are the case where the COUNT-based window is not enough:
+    # 64 requests of ~220 bytes each are ~14 KiB, but a window of 256 would be
+    # over the byte budget, so the request write has to be chunked or it will
+    # one day exceed the peer's receive buffer and deadlock. Nothing here can
+    # prove the absence of a deadlock, but the answers must still line up with
+    # the requests (a mismatch shows up as a corrupt or truncated tree).
+    rm -rf "$TMP/long" "$TMP/long-out"
+    mkdir -p "$TMP/long"
+    python3 - "$TMP/long" <<'PYEOF'
+import os, sys
+base = sys.argv[1]
+for i in range(120):
+    name = ("f%03d_" % i) + "x" * 190 + ".bin"
+    with open(os.path.join(base, name), "wb") as f:
+        f.write(bytes([i % 251]) * 1500)
+PYEOF
+    "$ADB" -s "$SER" push "$TMP/long" /tmp/ >/dev/null 2>&1
+    "$ADB" -s "$SER" --no-progress pull /tmp/long "$TMP/long-out" >/dev/null 2>&1
+    if diff -r "$TMP/long" "$TMP/long-out" >/dev/null 2>&1; then
+        ok "long remote paths pull correctly (byte-chunked request batches)"
+    else
+        bad "long-path pull differs: $(diff -rq "$TMP/long" "$TMP/long-out" 2>&1 | head -2 | tr '\n' ' ')"
+    fi
+    "$ADB" -s "$SER" shell rm -rf /tmp/tree /tmp/long >/dev/null 2>&1
+
+    # ------------------------------------------------------------------
+    # 3. shell completions, generated by the binary itself
+    # ------------------------------------------------------------------
+    for SH in bash zsh fish; do
+        "$ADB" --shell-completion=$SH adb-m > "$TMP/comp-$SH" 2>&1
+        if [ $? -eq 0 ] && [ -s "$TMP/comp-$SH" ]; then
+            ok "completion script generated for $SH"
+        else
+            bad "completion script for $SH is empty or failed"
+        fi
+    done
+    OUT="$("$ADB" --shell-completion=tclsh 2>&1)"; RC=$?
+    if [ $RC -ne 0 ] && printf '%s' "$OUT" | grep -q "unknown shell"; then
+        ok "unknown completion shell is rejected"
+    else
+        bad "unknown completion shell: rc=$RC out=$OUT"
+    fi
+    bash -n "$TMP/comp-bash" && ok "bash script parses" || bad "bash script has a syntax error"
+    if command -v fish >/dev/null 2>&1; then
+        fish -c "source $TMP/comp-fish" >/dev/null 2>&1 && ok "fish script parses" || bad "fish script has a syntax error"
+    else
+        skip "fish not installed (parse check skipped)"
+    fi
+    if command -v zsh >/dev/null 2>&1; then
+        zsh -n "$TMP/comp-zsh" && ok "zsh script parses" || bad "zsh script has a syntax error"
+    else
+        skip "zsh not installed (parse check skipped)"
+    fi
+    # The generated vocabulary must match `adb help`: a command that is
+    # documented but not completable (or the reverse) is exactly the drift that
+    # generating from the binary is supposed to prevent.
+    # Strip the assignment's shell syntax first, then split: `tr ' ' '\n'`
+    # before the prefix removal would leave "local" and "cmds=devices" as two
+    # tokens and match nothing.
+    GEN_CMDS="$(sed -n "s/^    local cmds='\(.*\)'$/\1/p" "$TMP/comp-bash")"
+    for C in push pull shell sync install uninstall sideload reboot devices connect \
+             disconnect forward reverse mdns help logcat bugreport jdwp root remount \
+             get-state get-serialno start-server kill-server tcpip keygen attach detach; do
+        case " $GEN_CMDS " in *" $C "*) ok "completion offers '$C'" ;; *) bad "completion missing '$C'" ;; esac
+    done
+
+    # bash functional drive with a real device attached, so the device-side
+    # queries (remote paths, device executables, package names) run for real.
+    rm -rf "$TMP/cd" && mkdir -p "$TMP/cd"
+    touch "$TMP/cd/app.apk" "$TMP/cd/ota.zip" "$TMP/cd/notes.txt"
+    cat > "$TMP/drive.sh" <<DRIVE
+set -u
+source "$TMP/comp-bash"
+PASS=0; FAIL=0
+try() {
+  local desc="\$1" want="\$2"; shift 2
+  COMP_WORDS=("$ADB" "\${@:2}"); COMP_CWORD=\$(( \${#COMP_WORDS[@]} - 1 )); COMPREPLY=()
+  _adb_m
+  case "\${COMPREPLY[*]}" in *"\$want"*) PASS=\$((PASS+1));;
+    *) echo "  FAIL \$desc (want '\$want', got: \${COMPREPLY[*]})"; FAIL=\$((FAIL+1));; esac
+}
+notry() {
+  local desc="\$1" bad="\$2"; shift 2
+  COMP_WORDS=("$ADB" "\${@:2}"); COMP_CWORD=\$(( \${#COMP_WORDS[@]} - 1 )); COMPREPLY=()
+  _adb_m
+  case "\${COMPREPLY[*]}" in *"\$bad"*) echo "  FAIL \$desc (unexpected '\$bad')"; FAIL=\$((FAIL+1));;
+    *) PASS=\$((PASS+1));; esac
+}
+try "commands"        "push"        adb-m ""
+try "options"         "--no-color"  adb-m ""
+try "langs"           "zh_TW"       adb-m --lang ""
+try "compression"     "brotli"      adb-m push -z ""
+try "reboot target"   "bootloader"  adb-m reboot ""
+try "sync target"     "system"      adb-m sync ""
+try "mdns sub"        "services"    adb-m mdns ""
+try "help sections"   "networking"  adb-m help ""
+try "forward sub"     "remove-all"  adb-m forward ""
+try "serials"         "$SER"        adb-m -s ""
+cd "$TMP/cd" || exit 1
+try "install -> apk"      "app.apk"   adb-m install ""
+notry "install hides non-apk" "notes.txt" adb-m install ""
+try "sideload -> zip"     "ota.zip"   adb-m sideload ""
+try "push LOCAL"          "app.apk"   adb-m push ""
+try "pull REMOTE (device)" "/"        adb-m pull "/"
+try "shell -> device cmds" "ls"       adb-m shell ""
+try "shell pm sub"        "packages"  adb-m shell pm list ""
+echo "drive: \$PASS passed, \$FAIL failed"
+[ "\$FAIL" -eq 0 ]
+DRIVE
+    if ANDROID_SERIAL="$SER" bash "$TMP/drive.sh" > "$TMP/drive.out" 2>&1; then
+        ok "bash functional drive ($(tail -1 "$TMP/drive.out"))"
+    else
+        bad "bash functional drive"; sed 's/^/      /' "$TMP/drive.out" | tail -12
+    fi
+
+    # zsh functional drive. zsh has no `complete -C`, so scripts/
+    # test-completions.zsh loads the script through autoload and calls the
+    # function with a capturing compadd stub; the serial lets the device-side
+    # checks run for real.
+    if command -v zsh >/dev/null 2>&1; then
+        "$ADB" --shell-completion=zsh adb-m > "$TMP/comp-zsh-adbm"
+        if zsh -f "$HERE/scripts/test-completions.zsh" "$TMP/comp-zsh-adbm" "$SER" \
+                > "$TMP/zsh.out" 2>&1; then
+            ok "zsh functional drive ($(grep -oE '[0-9]+ passed' "$TMP/zsh.out" | head -1))"
+        else
+            bad "zsh functional drive"; sed 's/^/      /' "$TMP/zsh.out" | tail -8
+        fi
+    else
+        skip "zsh not installed (functional drive skipped)"
+    fi
+
+    # fish drive via `complete -C`. fish resolves the command by name, so the
+    # binary has to be on PATH under the name the script completes for.
+    if command -v fish >/dev/null 2>&1; then
+        mkdir -p "$TMP/fishbin"
+        ln -sf "$ADB" "$TMP/fishbin/adb-m"
+        "$ADB" --shell-completion=fish adb-m > "$TMP/comp-fish-adbm"
+        FPASS=0; FFAIL=0
+        fish_try() {
+            local desc="$1" want="$2" tail_="$3" nlines
+            # Capture everything, stderr included: an empty candidate set and a
+            # helper that errored look the same through grep. Then grep the
+            # FILE, not a pipe — `printf ... | grep -q` under `set -o pipefail`
+            # fails whenever grep exits early on a big list (printf takes
+            # SIGPIPE), which is how a 6129-candidate result read as a failure.
+            PATH="$TMP/fishbin:$PATH" ANDROID_SERIAL="$SER" \
+                fish -c "source $TMP/comp-fish-adbm; complete -C 'adb-m $tail_'" \
+                > "$TMP/fish.out" 2>&1
+            nlines=$(wc -l < "$TMP/fish.out")
+            if grep -q -- "$want" "$TMP/fish.out"; then
+                FPASS=$((FPASS+1))
+            else
+                echo "      FAIL fish: $desc (want '$want', got $nlines lines)"
+                head -4 "$TMP/fish.out" | sed 's/^/        | /'
+                FFAIL=$((FFAIL+1))
+            fi
+        }
+        fish_try "commands"        "push"        ""
+        fish_try "options"         "--no-color"  ""
+        fish_try "langs"           "zh_TW"       "--lang "
+        fish_try "reboot target"   "bootloader"  "reboot "
+        fish_try "sync target"     "system"      "sync "
+        fish_try "mdns sub"        "services"    "mdns "
+        fish_try "help sections"   "networking"  "help "
+        # Device-side: the device's own executables. Needs the daemon under
+        # test, so it is only meaningful when CONNECTED is set (we are inside
+        # that block).
+        fish_try "device cmds"     "ls"          "shell "
+        # Remote paths for pull: `ls -dp` output from the device.
+        fish_try "remote paths"    "/"           "pull /"
+        if [ $FFAIL -eq 0 ]; then ok "fish functional drive ($FPASS checks)"; else bad "fish functional drive"; fi
+    else
+        skip "fish not installed (functional drive skipped)"
+    fi
+
     # server-status protobuf (goes through protobuf TextFormat)
     ST="$("$ADB" -s "$SER" server-status 2>&1)"
     case "$ST" in

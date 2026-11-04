@@ -80,6 +80,16 @@ jobs:
           # the first match, find takes SIGPIPE) and would misreport either way.
           ARTIFACTS=$(find ../aosp-adbd/packages/modules/adb -name '*.rej' -o -name '*.orig' | head -1)
           [ -z "$ARTIFACTS" ] || { echo "patch left artifacts: $ARTIFACTS"; exit 1; }
+          # 0005 batches a directory listing into one write. A silent no-op here
+          # would cost ~6 ms per directory in every recursive pull, and the only
+          # symptom is slowness, so assert the two writes are gone.
+          W=$(grep -c 'out.append(reinterpret_cast<const char\*>(&msg)' \
+                ../aosp-adbd/packages/modules/adb/daemon/file_sync_service.cpp)
+          [ "$W" = "2" ] || { echo "do_list does not buffer its listing ($W appends, want 2)"; exit 1; }
+          if grep -q 'WriteFdExactly(s, &msg, sizeof(msg))' \
+               ../aosp-adbd/packages/modules/adb/daemon/file_sync_service.cpp; then
+            echo "do_list still writes per-entry"; exit 1
+          fi
 
       - name: Smoke test (TCP, shell + push/pull)
         working-directory: adbd-standalone
@@ -203,7 +213,8 @@ jobs:
           # "'atomic' file not found" — a misleading error that cost a CI run.
           pacman -Syu --noconfirm --needed \
             git clang cmake ninja make pkgconf zlib gcc-libs libc++ libc++abi \
-            fakeroot curl python lz4 zstd brotli libusb systemd-libs
+            fakeroot curl python lz4 zstd brotli libusb systemd-libs \
+            zsh fish
 
       - uses: actions/checkout@v4
 
@@ -224,6 +235,18 @@ jobs:
           set -x   # never fail silently
           ./build-native/adb version | tee /tmp/ver.txt
           grep -q 'Android Debug Bridge version' /tmp/ver.txt
+          # The pipelined directory walk replaced a recursive one; both of the
+          # old call sites must be gone and the new helpers present, or a patch
+          # silently did not apply and "building file list..." costs one round
+          # trip per directory again.
+          SYNC=../aosp-adbd/packages/modules/adb/client/file_sync_client.cpp
+          grep -q 'SendRequestBatch' "$SYNC"
+          grep -q 'SendRecv2Batch' "$SYNC"
+          grep -q 'remote_build_list(sc, file_list, current.rpath' "$SYNC" \
+            && { echo "the recursive walk is still there"; exit 1; } || true
+          # Nagle off on accepted sockets (adb_listeners.cpp): two call sites.
+          N=$(grep -c 'disable_tcp_nagle(fd.get())' ../aosp-adbd/packages/modules/adb/adb_listeners.cpp)
+          [ "$N" = "2" ] || { echo "Nagle still on for accepted sockets ($N, want 2)"; exit 1; }
           # mDNS is deliberately absent; it must say so rather than pretend.
           ./build-native/adb mdns check > /tmp/mdns.txt 2>&1
           grep -q 'unavailable' /tmp/mdns.txt
@@ -247,6 +270,17 @@ jobs:
         working-directory: adb-standalone
         run: bash scripts/test-adb.sh build-native/adb ../adbd-standalone/build-native/adbd
 
+      # The bar's layout cannot be checked through a real transfer: over
+      # loopback a push finishes before enough frames are emitted. This drives
+      # adb_progress directly under a pty whose window size it sets itself
+      # (`script`'s pty is 0x0, so the binary would fall back to 80 columns and
+      # the assertions would measure nothing).
+      - name: Progress bar layout suite
+        working-directory: adb-standalone
+        run: |
+          cmake --build build-native --target test_progress_layout -j"$(nproc)"
+          python3 scripts/test-progress-layout.py
+
       - name: Package (makepkg)
         working-directory: adb-standalone
         run: |
@@ -260,7 +294,26 @@ jobs:
           chown -R builder:builder . ../aosp-adbd
           sudo -u builder bash -c 'makepkg -f'
           tar --zstd -xOf adb-meowarch-*.pkg.tar.zst .PKGINFO | grep '^arch = x86_64$'
+          # The package name stays adb-meowarch (upgrades), but both command
+          # names ship: adb-m is the short one, adb-meowarch the original.
+          tar --zstd -xOf adb-meowarch-*.pkg.tar.zst .PKGINFO | grep -qx 'pkgname = adb-meowarch'
           tar --zstd -tf adb-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/adb-meowarch'
+          tar --zstd -tf adb-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/adb-m'
+          tar --zstd -tf adb-meowarch-*.pkg.tar.zst | grep -qx 'usr/lib/adb-meowarch/adb'
+          # Both names must be completable in all three shells, since both are
+          # real executables on PATH.
+          tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
+            grep -qx 'usr/share/bash-completion/completions/adb-m'
+          tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
+            grep -qx 'usr/share/bash-completion/completions/adb-meowarch'
+          tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
+            grep -qx 'usr/share/zsh/site-functions/_adb-m'
+          tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
+            grep -qx 'usr/share/zsh/site-functions/_adb-meowarch'
+          tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
+            grep -qx 'usr/share/fish/vendor_completions.d/adb-m.fish'
+          tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
+            grep -qx 'usr/share/fish/vendor_completions.d/adb-meowarch.fish'
 
       - name: Upload package
         uses: actions/upload-artifact@v4

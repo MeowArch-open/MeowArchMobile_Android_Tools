@@ -19,9 +19,32 @@
 
 #include <stddef.h>
 
+#include <string>
+#include <vector>
+
 #include "adb_i18n.h"
 
 namespace adbhelp {
+
+// The help table, exposed so the completion generator and `adb help` share one
+// source of truth (a command that is documented but not completable, or the
+// reverse, is how the two drift apart).
+struct CommandInfo {
+    std::string name;     // bare command or option: "push", "--lang=CODE" -> "--lang"
+    std::string args;     // everything after the name in the cmd cell
+    std::string desc;     // English description
+    std::string section;  // section keyword ("transfer", "shell", ...)
+};
+
+// Commands only (no options), in help order.
+std::vector<CommandInfo> Commands();
+
+// Long options as documented, normalized to their bare spelling:
+// "--lang=CODE" -> "--lang", "--set-active[=SLOT]" -> "--set-active".
+std::vector<std::string> Options();
+
+// Section keywords, in help order.
+std::vector<std::string> SectionKeywords();
 
 // Print the whole help text to stdout. |version| is what adb_version()
 // returned (first line). Returns 0 (a Main() return value).

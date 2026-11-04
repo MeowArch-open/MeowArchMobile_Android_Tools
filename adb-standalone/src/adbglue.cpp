@@ -13,6 +13,7 @@
 
 #include <string>
 
+#include "adb_completion.h"
 #include "adb_help.h"
 #include "adb_progress.h"
 #include "fb_color.h"
@@ -24,6 +25,8 @@ int EarlyInit(int argc, char** argv) {
     // rejects unknown options, and help/errors printed later must already know
     // the locale and color state.
     std::string lang_override;
+    std::string completion_shell;
+    std::string completion_command;
     bool color_forced_on = false, color_forced_off = false, progress_off = false;
     bool list_langs = false;
     for (int i = 1; i < argc; i++) {
@@ -34,6 +37,25 @@ int EarlyInit(int argc, char** argv) {
         else if (a == "--no-color") color_forced_off = true;
         else if (a == "--color") color_forced_on = true;
         else if (a == "--no-progress") progress_off = true;
+        else if (a.rfind("--shell-completion=", 0) == 0) {
+            completion_shell = a.substr(19);
+            // An optional next token names the command the script should
+            // complete for: the package installs the same binary under two
+            // names (adb-m and adb-meowarch) and fish keys its rules on that
+            // name, so one generation per alias is needed.
+            if (i + 1 < argc && argv[i + 1][0] != '-') completion_command = argv[++i];
+        }
+        else if (a == "--shell-completion" && i + 1 < argc) completion_shell = argv[++i];
+    }
+
+    // Machine output: a script another program will source. Print it and exit
+    // before any colour/locale decision can leak into it.
+    if (!completion_shell.empty()) {
+        // Prefer the explicit name; argv[0] may carry a build-tree path
+        // ("./build-native/adb"), which is not what a shell will type.
+        std::string name = !completion_command.empty() ? completion_command
+                                                       : (argv[0] ? argv[0] : "adb-m");
+        exit(ShellCompletion(completion_shell, name));
     }
 
     adbi18n::Init(lang_override);
@@ -57,9 +79,14 @@ int EarlyInit(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         std::string a(argv[i]);
         bool drop = a == "--no-color" || a == "--color" || a == "--no-progress" ||
-                    a == "--list-langs" || a.rfind("--lang=", 0) == 0;
+                    a == "--list-langs" || a.rfind("--lang=", 0) == 0 ||
+                    a.rfind("--shell-completion=", 0) == 0;
         if (!drop && a == "--lang" && i + 1 < argc) {
             // consume the separate-argument form as well
+            i++;
+            drop = true;
+        }
+        if (!drop && a == "--shell-completion" && i + 1 < argc) {
             i++;
             drop = true;
         }
@@ -94,12 +121,26 @@ int ShowHelpSection(const std::string& version, const char* section) {
 
 int ListHelpSections() { return adbhelp::ListSections(); }
 
+int ShellCompletion(const std::string& shell, const std::string& command) {
+    std::string script = adbcompletion::Generate(shell, command);
+    if (script.empty()) {
+        fprintf(stderr, "%sunknown shell '%s' (supported: %s)\n",
+                fbcolor::Paint(fbcolor::C::Red, "error: ").c_str(), shell.c_str(),
+                adbcompletion::SupportedShells());
+        return 2;
+    }
+    fwrite(script.data(), 1, script.size(), stdout);
+    return 0;
+}
+
 bool IsHelpSection(const char* name) { return adbhelp::IsSection(name); }
 
 void ProgressArm(const std::string& label, uint64_t total) { adbprogress::Arm(label, total); }
 void ProgressSetLabel(const std::string& label) { adbprogress::SetLabel(label); }
 void ProgressUpdate(uint64_t done) { adbprogress::Update(done); }
 void ProgressFinish() { adbprogress::Finish(); }
+void ProgressArmPercent(const std::string& label) { adbprogress::ArmPercent(label); }
+void ProgressUpdatePercent(int pct) { adbprogress::UpdatePercent(pct); }
 bool ProgressEnabled() { return adbprogress::Enabled(); }
 
 }  // namespace adbglue

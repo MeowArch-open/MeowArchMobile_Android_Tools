@@ -81,7 +81,8 @@ message(STATUS "AOSP tree: ${AOSP_ROOT}")
 #        nothing else has to change.
 foreach(_patch
         0001-fdevent.h-include-vector-explicitly.patch
-        0002-adb-host-ux.patch)
+        0002-adb-host-ux.patch
+        0003-adb_listeners.cpp-disable-nagle-on-accepted-sockets.patch)
     execute_process(
         COMMAND patch -N -s --fuzz=0 --no-backup-if-mismatch -r /dev/null -d "${ADB}" -p1 -i
                 "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"
@@ -125,6 +126,7 @@ add_library(adb_glue STATIC
     src/adb_i18n_zh_tw.cpp
     src/adb_i18n_ja.cpp
     src/adb_help.cpp
+    src/adb_completion.cpp
     src/adbglue.cpp
 )
 target_include_directories(adb_glue PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -132,6 +134,14 @@ target_link_libraries(adb_glue PUBLIC base_static)
 target_compile_options(adb_glue PRIVATE -Wall -Wextra -Wformat=2)
 target_compile_options(adb_glue PRIVATE
     $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:GNU>>:-Werror=format -Wno-format-nonliteral>)
+
+# ------------------------------------------------- test-only binaries
+# Drives the progress bar directly so scripts/test-progress-layout.py can check
+# its layout deterministically: a real transfer over loopback finishes before
+# enough frames are emitted to prove the bar's column is stable.
+add_executable(test_progress_layout tests/test_progress_layout.cpp)
+target_link_libraries(test_progress_layout PRIVATE adb_glue)
+set_target_properties(test_progress_layout PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
 # ------------------------------------------------------------ boringssl
 set(BSSL_SRC "${BSSL}/src")

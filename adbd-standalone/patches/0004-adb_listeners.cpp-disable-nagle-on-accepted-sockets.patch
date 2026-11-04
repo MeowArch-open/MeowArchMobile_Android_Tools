@@ -1,0 +1,54 @@
+From: MeowArchMobile
+Subject: [PATCH] adb_listeners.cpp: disable Nagle on accepted sockets
+
+Upstream turns TCP_NODELAY on for every socket it creates itself — the
+client's side in socket_spec.cpp's socket_spec_connect(), adbd's in
+daemon/transport_socket_server.cpp, adb_wifi.cpp — but not for the
+sockets it ACCEPTS from clients, in ss_listener_event_func() and
+listener_event_func(). Those are exactly the sockets the adb server
+writes many small replies to.
+
+With Nagle left on, a reply that follows a still-unacknowledged reply
+waits for a delayed ACK from a peer that is itself blocked writing.
+Measured on loopback with 1000 one-file directories, one LIST per
+directory: 6-12 ms per directory instead of ~0.05 ms, i.e. the entire
+cost of "pull: building file list..." was this interaction rather than
+any syscall or disk work. Disabling it makes a recursive pull's listing
+phase roughly three orders of magnitude cheaper, and it is what lets the
+client-side request batching in file_sync_client.cpp pay off (without
+it, batching actually made things WORSE at small windows: 4.5 s at
+window 8 versus 0.09 s at window 1).
+
+A no-op on unix-domain sockets, so local-only setups are unaffected.
+
+diff --git a/adb_listeners.cpp b/adb_listeners.cpp
+index c24016f..19fc810 100644
+--- a/adb_listeners.cpp
++++ b/adb_listeners.cpp
+@@ -82,6 +82,16 @@ static void ss_listener_event_func(int _fd, unsigned ev, void *_l) {
+         unique_fd fd(adb_socket_accept(_fd, nullptr, nullptr));
+         if (fd < 0) return;
+ 
++        // MeowArchMobile: upstream disables Nagle on every other socket it
++        // creates — the client's side in socket_spec_connect(), adbd's in
++        // transport_socket_server.cpp — but not on the sockets it accepts from
++        // clients, which are exactly the ones it writes many small replies to.
++        // With Nagle on here, a reply that follows a still-unacknowledged reply
++        // waits for a delayed ACK, which measured ~12 ms per directory listing
++        // and is what made "pull: building file list..." scale with the number
++        // of directories instead of their bytes. A no-op on unix sockets.
++        disable_tcp_nagle(fd.get());
++
+         int rcv_buf_size = CHUNK_SIZE;
+         adb_setsockopt(fd.get(), SOL_SOCKET, SO_RCVBUF, &rcv_buf_size, sizeof(rcv_buf_size));
+ 
+@@ -104,6 +114,9 @@ static void listener_event_func(int _fd, unsigned ev, void* _l)
+             return;
+         }
+ 
++        // See ss_listener_event_func: same omission, same fix.
++        disable_tcp_nagle(fd.get());
++
+         asocket* s = create_local_socket(std::move(fd));
+         if (s) {
+             s->transport = listener->transport;

@@ -33,12 +33,21 @@ int ListLangs();
 int ShowHelp(const std::string& version);
 int ShowHelpSection(const std::string& version, const char* section);
 int ListHelpSections();
+
+// Print a completion script for |shell| ("bash", "zsh" or "fish"), completing
+// |command| as the program name. Returns 0, or 2 with a diagnostic on stderr
+// when the shell is unknown.
+int ShellCompletion(const std::string& shell, const std::string& command);
 bool IsHelpSection(const char* name);
 
 // Progress bar for the sync loop (client/file_sync_client.cpp). The transfer
 // ledger arms it with the file name and expected size, reports bytes as they
 // move, and finishes before printing its usual summary line.
 void ProgressArm(const std::string& label, uint64_t total);
+// Percentage-driven mode (adb bugreport, whose device side reports a fraction
+// rather than bytes): bar + "NN%", no byte counter and no speed.
+void ProgressArmPercent(const std::string& label);
+void ProgressUpdatePercent(int pct);
 void ProgressSetLabel(const std::string& label);
 void ProgressUpdate(uint64_t done);
 void ProgressFinish();

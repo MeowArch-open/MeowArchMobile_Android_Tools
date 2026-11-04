@@ -105,8 +105,103 @@ index 6b20151..c1bd2dd 100644
  
      if (error != 0) {
          fprintf(stderr, ": %s", strerror(error));
+diff --git a/client/adb_install.cpp b/client/adb_install.cpp
+index 566bdb5..0f2792a 100644
+--- a/client/adb_install.cpp
++++ b/client/adb_install.cpp
+@@ -233,7 +233,11 @@ static int install_app_streamed(int argc, const char** argv, bool use_fastdeploy
+         error_exit("connect error for write: %s", error.c_str());
+     }
+ 
+-    if (!copy_to_file(local_fd.get(), remote_fd.get())) {
++    // MeowArchMobile: the bar. An APK stream is exactly sb.st_size bytes long,
++    // so this one shows a real percentage — upstream prints nothing here, which
++    // for a 2 GiB game install is several silent minutes.
++    if (!copy_to_file(local_fd.get(), remote_fd.get(), file,
++                      static_cast<uint64_t>(sb.st_size))) {
+         perror_exit("failed to install: copy_to_file: %s", file);
+     }
+ 
+@@ -634,7 +638,8 @@ static int install_multiple_app_streamed(int argc, const char** argv) {
+             goto finalize_session;
+         }
+ 
+-        if (!copy_to_file(local_fd.get(), remote_fd.get())) {
++        if (!copy_to_file(local_fd.get(), remote_fd.get(), file,
++                          static_cast<uint64_t>(sb.st_size))) {
+             fprintf(stderr, "adb: failed to write \"%s\": %s\n", file, strerror(errno));
+             success = false;
+             goto finalize_session;
+@@ -888,7 +893,8 @@ int install_multi_package(int argc, const char** argv) {
+                 goto finalize_multi_package_session;
+             }
+ 
+-            if (!copy_to_file(local_fd.get(), remote_fd.get())) {
++            if (!copy_to_file(local_fd.get(), remote_fd.get(), split.c_str(),
++                              static_cast<uint64_t>(sb.st_size))) {
+                 fprintf(stderr, "adb: failed to write %s: %s\n", split.c_str(), strerror(errno));
+                 goto finalize_multi_package_session;
+             }
+diff --git a/client/bugreport.cpp b/client/bugreport.cpp
+index 23ecb55..8fb1565 100644
+--- a/client/bugreport.cpp
++++ b/client/bugreport.cpp
+@@ -29,6 +29,7 @@
+ #include "adb_client.h"
+ #include "adb_utils.h"
+ #include "client/file_sync_client.h"
++#include "adbglue.h"
+ 
+ static constexpr char BUGZ_BEGIN_PREFIX[] = "BEGIN:";
+ static constexpr char BUGZ_PROGRESS_PREFIX[] = "PROGRESS:";
+@@ -91,6 +92,7 @@ class BugreportStandardStreamsCallback : public StandardStreamsCallbackInterface
+         // Pull the generated bug report.
+         if (status_ == 0) {
+             if (src_file_.empty()) {
++                adbglue::ProgressFinish();
+                 fprintf(stderr, "bugreportz did not return a '%s' or '%s' line\n", BUGZ_OK_PREFIX,
+                         BUGZ_FAIL_PREFIX);
+                 return -1;
+@@ -104,6 +106,10 @@ class BugreportStandardStreamsCallback : public StandardStreamsCallbackInterface
+             }
+             std::vector<const char*> srcs{src_file_.c_str()};
+             SetLineMessage("pulling");
++            // MeowArchMobile: end the percentage phase explicitly. The pull that
++            // follows arms its own byte-mode bar over the same line; without
++            // this the "100%" frame is overwritten before it can be read.
++            adbglue::ProgressFinish();
+             status_ =
+                 br_->DoSyncPull(srcs, destination.c_str(), false, line_message_.c_str()) ? 0 : 1;
+             if (status_ == 0) {
+@@ -116,6 +122,9 @@ class BugreportStandardStreamsCallback : public StandardStreamsCallbackInterface
+                         destination.c_str(), src_file_.c_str());
+             }
+         }
++        // Whatever happened above, leave no bar on screen: the next thing the
++        // user reads is a result line, not a stuck "42%".
++        adbglue::ProgressFinish();
+         return status_;
+     }
+ 
+@@ -284,6 +293,16 @@ int Bugreport::DoIt(int argc, const char** argv) {
+ }
+ 
+ void Bugreport::UpdateProgress(const std::string& message, int progress_percentage) {
++    // MeowArchMobile: bugreportz reports a fraction, not bytes, so this drives
++    // the bar in its percentage mode (bar + "NN%", no byte counter or speed).
++    // LinePrinter's own line is only printed when the bar is off, so the two
++    // never overwrite each other. The pull that follows arms its own byte-mode
++    // bar, which clears percentage mode as a side effect.
++    if (adbglue::ProgressEnabled()) {
++        adbglue::ProgressArmPercent(message);
++        adbglue::ProgressUpdatePercent(progress_percentage);
++        return;
++    }
+     line_printer_.Print(
+         android::base::StringPrintf("[%3d%%] %s", progress_percentage, message.c_str()),
+         LinePrinter::INFO);
 diff --git a/client/commandline.cpp b/client/commandline.cpp
-index 5cd3ab6..5a42e8f 100644
+index 5cd3ab6..1af196f 100644
 --- a/client/commandline.cpp
 +++ b/client/commandline.cpp
 @@ -65,6 +65,8 @@
@@ -138,7 +233,173 @@ index 5cd3ab6..5a42e8f 100644
      fprintf(stdout, "%s\n", adb_version().c_str());
      // clang-format off
      fprintf(stdout,
-@@ -1496,6 +1511,67 @@ static int process_remount_or_verity_service(const int argc, const char** argv)
+@@ -389,7 +404,20 @@ static void stdinout_raw_epilogue(int inFd, int outFd, int old_stdin_mode, int o
+ #endif
+ }
+ 
+-bool copy_to_file(int inFd, int outFd) {
++// |label| (optional) turns on the transfer bar: backup, restore and exec-out
++// stream an amount nobody knows up front, which is exactly why they were silent
++// for minutes at a time. The bar shows bytes and speed with no percentage (see
++// adb_progress.h), so it stays a fixed-width line.
++bool copy_to_file(int inFd, int outFd, const char* label, uint64_t label_total) {
++    // When the payload itself is going to a terminal (exec-out with no
++    // redirect), a bar interleaved with those bytes only adds noise: the screen
++    // is already full of the stream. The useful case — and the only one the bar
++    // is armed for — is the payload going somewhere else while stderr stays a
++    // terminal.
++    if (label && outFd == STDOUT_FILENO && unix_isatty(STDOUT_FILENO)) {
++        label = nullptr;
++    }
++
+     bool result = true;
+     std::vector<char> buf(64 * 1024);
+     int len;
+@@ -400,6 +428,7 @@ bool copy_to_file(int inFd, int outFd) {
+     D("copy_to_file(%d -> %d)", inFd, outFd);
+ 
+     stdinout_raw_prologue(inFd, outFd, old_stdin_mode, old_stdout_mode);
++    if (label) adbglue::ProgressArm(label, label_total);
+ 
+     while (true) {
+         if (inFd == STDIN_FILENO) {
+@@ -423,8 +452,10 @@ bool copy_to_file(int inFd, int outFd) {
+             adb_write(outFd, buf.data(), len);
+         }
+         total += len;
++        if (label) adbglue::ProgressUpdate(static_cast<uint64_t>(total));
+     }
+ 
++    if (label) adbglue::ProgressFinish();
+     stdinout_raw_epilogue(inFd, outFd, old_stdin_mode, old_stdout_mode);
+ 
+     D("copy_to_file() finished with %s after %lu bytes", result ? "success" : "failure", total);
+@@ -840,22 +871,32 @@ static int adb_sideload_legacy(const char* filename, int in_fd, int size) {
+ 
+     char buf[CHUNK_SIZE];
+     int total = size;
++    // MeowArchMobile: this path is a plain linear send, so the bar is exact.
++    adbglue::ProgressArm(filename, static_cast<uint64_t>(total));
++    long sent = 0;
+     while (size > 0) {
+         unsigned xfer = (size > CHUNK_SIZE) ? CHUNK_SIZE : size;
+         if (!ReadFdExactly(in_fd, buf, xfer)) {
++            adbglue::ProgressFinish();
+             fprintf(stderr, "adb: failed to read data from %s: %s\n", filename, strerror(errno));
+             return -1;
+         }
+         if (!WriteFdExactly(out_fd, buf, xfer)) {
+             std::string error;
+             adb_status(out_fd, &error);
++            adbglue::ProgressFinish();
+             fprintf(stderr, "adb: failed to write data: %s\n", error.c_str());
+             return -1;
+         }
+         size -= xfer;
+-        printf("sending: '%s' %4d%%    \r", filename, (int)(100LL - ((100LL * size) / (total))));
+-        fflush(stdout);
++        sent += xfer;
++        adbglue::ProgressUpdate(static_cast<uint64_t>(sent));
++        if (!adbglue::ProgressEnabled()) {
++            printf("sending: '%s' %4d%%    \r", filename, (int)(100LL - ((100LL * size) / (total))));
++            fflush(stdout);
++        }
+     }
++    adbglue::ProgressFinish();
+     printf("\n");
+ 
+     if (!adb_status(out_fd, &error)) {
+@@ -925,10 +966,18 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+ 
+     char buf[SIDELOAD_HOST_BLOCK_SIZE];
+ 
++    // MeowArchMobile: the bar. Upstream's own "serving: ... (~N%)" line tracks
++    // the same 47/100 scale, whose 100% is reached at ~2.13x the package size
++    // (the device reads it once to verify, once to install), so the total is
++    // scaled to match and "100%" means what a user expects it to.
++    const uint64_t bar_total = static_cast<uint64_t>(sb.st_size) * 100 / 47;
++    adbglue::ProgressArm(filename, bar_total);
++
+     int64_t xfer = 0;
+     int last_percent = -1;
+     while (true) {
+         if (!ReadFdExactly(device_fd, buf, 8)) {
++            adbglue::ProgressFinish();
+             fprintf(stderr, "adb: failed to read command: %s\n", strerror(errno));
+             return -1;
+         }
+@@ -936,6 +985,7 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+ 
+         if (strcmp(kMinadbdServicesExitSuccess, buf) == 0 ||
+             strcmp(kMinadbdServicesExitFailure, buf) == 0) {
++            adbglue::ProgressFinish();
+             printf("\rTotal xfer: %.2fx%*s\n",
+                    static_cast<double>(xfer) / (sb.st_size ? sb.st_size : 1),
+                    static_cast<int>(strlen(filename) + 10), "");
+@@ -948,6 +998,7 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+         int64_t block = strtoll(buf, nullptr, 10);
+         int64_t offset = block * SIDELOAD_HOST_BLOCK_SIZE;
+         if (offset >= static_cast<int64_t>(sb.st_size)) {
++            adbglue::ProgressFinish();
+             fprintf(stderr,
+                     "adb: failed to read block %" PRId64 " at offset %" PRId64 ", past end %" PRId64
+                     "\n",
+@@ -961,15 +1012,18 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+         }
+ 
+         if (adb_lseek(package_fd, offset, SEEK_SET) != offset) {
++            adbglue::ProgressFinish();
+             fprintf(stderr, "adb: failed to seek to package block: %s\n", strerror(errno));
+             return -1;
+         }
+         if (!ReadFdExactly(package_fd, buf, to_write)) {
++            adbglue::ProgressFinish();
+             fprintf(stderr, "adb: failed to read package block: %s\n", strerror(errno));
+             return -1;
+         }
+ 
+         if (!WriteFdExactly(device_fd, buf, to_write)) {
++            adbglue::ProgressFinish();
+             adb_status(device_fd, &error);
+             fprintf(stderr, "adb: failed to write data '%s' *\n", error.c_str());
+             return -1;
+@@ -982,10 +1036,15 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+         // extra access to things like the zip central directory).
+         // This estimate of the completion becomes 100% when we've
+         // transferred ~2.13 (=100/47) times the package size.
++        adbglue::ProgressUpdate(static_cast<uint64_t>(xfer));
+         int percent = static_cast<int>(xfer * 47LL / (sb.st_size ? sb.st_size : 1));
+         if (percent != last_percent) {
+-            printf("\rserving: '%s'  (~%d%%)    ", filename, percent);
+-            fflush(stdout);
++            // Upstream's line is only printed when the bar is off, so the two
++            // never overwrite each other.
++            if (!adbglue::ProgressEnabled()) {
++                printf("\rserving: '%s'  (~%d%%)    ", filename, percent);
++                fflush(stdout);
++            }
+             last_percent = percent;
+         }
+     }
+@@ -1235,7 +1294,7 @@ static int backup(int argc, const char** argv) {
+     fprintf(stdout, "Now unlock your device and confirm the backup operation...\n");
+     fflush(stdout);
+ 
+-    copy_to_file(fd.get(), outFd.get());
++    copy_to_file(fd.get(), outFd.get(), filename);
+     return EXIT_SUCCESS;
+ }
+ 
+@@ -1272,7 +1331,7 @@ static int restore(int argc, const char** argv) {
+     fprintf(stdout, "Now unlock your device and confirm the restore operation.\n");
+     fflush(stdout);
+ 
+-    copy_to_file(tarFd.get(), fd.get());
++    copy_to_file(tarFd.get(), fd.get(), filename);
+ 
+     // Provide an in-band EOD marker in case the archive file is malformed
+     write_zeros(512 * 2, fd);
+@@ -1496,6 +1555,67 @@ static int process_remount_or_verity_service(const int argc, const char** argv)
      }
  }
  
@@ -206,7 +467,7 @@ index 5cd3ab6..5a42e8f 100644
  static int adb_query_command(const std::string& command) {
      std::string result;
      std::string error;
-@@ -1770,8 +1846,11 @@ int adb_commandline(int argc, const char** argv) {
+@@ -1770,8 +1890,11 @@ int adb_commandline(int argc, const char** argv) {
          if (!adb_check_server_version(&error)) {
              error_exit("failed to check server version: %s", error.c_str());
          }
@@ -220,7 +481,29 @@ index 5cd3ab6..5a42e8f 100644
      } else if (!strcmp(argv[0], "transport-id")) {
          TransportId transport_id;
          std::string error;
-@@ -2165,6 +2244,19 @@ int adb_commandline(int argc, const char** argv) {
+@@ -1820,6 +1943,10 @@ int adb_commandline(int argc, const char** argv) {
+ 
+         if (argc < 2) error_exit("usage: adb %s command", argv[0]);
+ 
++        // MeowArchMobile: keep the command's own name before argv is shifted
++        // below; it becomes the transfer bar's label.
++        const char* label = argv[1];
++
+         std::string cmd = "exec:";
+         cmd += argv[1];
+         argc -= 2;
+@@ -1838,7 +1965,9 @@ int adb_commandline(int argc, const char** argv) {
+         if (exec_in) {
+             copy_to_file(STDIN_FILENO, fd.get());
+         } else {
+-            copy_to_file(fd.get(), STDOUT_FILENO);
++            // MeowArchMobile: exec-out is the one command people point at a
++            // multi-gigabyte dump, and upstream shows nothing at all.
++            copy_to_file(fd.get(), STDOUT_FILENO, label);
+         }
+         return 0;
+     } else if (!strcmp(argv[0], "kill-server")) {
+@@ -2165,6 +2294,19 @@ int adb_commandline(int argc, const char** argv) {
  
      /* "adb /?" is a common idiom under Windows */
      else if (!strcmp(argv[0], "--help") || !strcmp(argv[0], "help") || !strcmp(argv[0], "/?")) {
@@ -240,8 +523,35 @@ index 5cd3ab6..5a42e8f 100644
          help();
          return 0;
      } else if (!strcmp(argv[0], "--version") || !strcmp(argv[0], "version")) {
+diff --git a/client/commandline.h b/client/commandline.h
+index 96eeb83..c0001cf 100644
+--- a/client/commandline.h
++++ b/client/commandline.h
+@@ -18,6 +18,7 @@
+ #define COMMANDLINE_H
+ 
+ #include <android-base/strings.h>
++#include <stdint.h>
+ 
+ #include <optional>
+ 
+@@ -120,7 +121,13 @@ int adb_commandline(int argc, const char** argv);
+ // Helper retrieval function.
+ const std::optional<FeatureSet>& adb_get_feature_set_or_die();
+ 
+-bool copy_to_file(int inFd, int outFd);
++// Chunks data between two fds. With a non-null |label| the transfer bar is
++// driven as well (no percentage: the length is unknown).
++// |label| turns the transfer bar on for a stream whose length the sync layer
++// does not track (backup, restore, exec-out, install). |label_total| is its
++// size when known (install streams a package of known length, so it gets a
++// percentage); 0 means unknown, and the bar renders bytes and speed only.
++bool copy_to_file(int inFd, int outFd, const char* label = nullptr, uint64_t label_total = 0);
+ 
+ // Connects to the device "shell" service with |command| and prints the
+ // resulting output.
 diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
-index 11dde9c..19689e9 100644
+index 11dde9c..5872ff4 100644
 --- a/client/file_sync_client.cpp
 +++ b/client/file_sync_client.cpp
 @@ -43,6 +43,7 @@
@@ -252,7 +562,23 @@ index 11dde9c..19689e9 100644
  #include "compression_utils.h"
  #include "file_sync_protocol.h"
  #include "line_printer.h"
-@@ -120,6 +121,10 @@ struct TransferLedger {
+@@ -74,6 +75,15 @@ static void ensure_trailing_separators(std::string& local_path, std::string& rem
+     }
+ }
+ 
++// MeowArchMobile instrumentation, printed when ADB_SYNC_STATS is set: the cost
++// of "pull: building file list..." is round trips, not bytes, so counting them
++// says whether the pipelined walk is doing its job.
++static int g_stats_ls_requests = 0;
++static int g_stats_ls_batches = 0;
++static int g_stats_stat_requests = 0;
++static int g_stats_stat_batches = 0;
++static int g_stats_recv_batches = 0;
++
+ static bool should_pull_file(mode_t mode) {
+     return S_ISREG(mode) || S_ISBLK(mode) || S_ISCHR(mode);
+ }
+@@ -120,6 +130,10 @@ struct TransferLedger {
    private:
      std::string last_progress_str;
      std::chrono::steady_clock::time_point last_progress_time;
@@ -263,7 +589,7 @@ index 11dde9c..19689e9 100644
  
    public:
      TransferLedger() {
-@@ -143,6 +148,10 @@ struct TransferLedger {
+@@ -143,6 +157,10 @@ struct TransferLedger {
          bytes_expected = 0;
          last_progress_str.clear();
          last_progress_time = {};
@@ -274,7 +600,7 @@ index 11dde9c..19689e9 100644
      }
  
      std::string TransferRate() {
-@@ -164,6 +173,45 @@ struct TransferLedger {
+@@ -164,6 +182,45 @@ struct TransferLedger {
                          uint64_t file_total_bytes) {
          static constexpr auto kProgressReportInterval = 100ms;
  
@@ -320,7 +646,7 @@ index 11dde9c..19689e9 100644
          auto now = std::chrono::steady_clock::now();
          if (now < last_progress_time + kProgressReportInterval) {
              return;
-@@ -199,7 +247,12 @@ struct TransferLedger {
+@@ -199,7 +256,12 @@ struct TransferLedger {
              }
          }
          if (output != last_progress_str) {
@@ -334,7 +660,7 @@ index 11dde9c..19689e9 100644
              last_progress_str = std::move(output);
              last_progress_time = now;
          }
-@@ -218,6 +271,9 @@ struct TransferLedger {
+@@ -218,6 +280,9 @@ struct TransferLedger {
             << direction_str << ", " << files_skipped << " skipped.";
          ss << TransferRate();
  
@@ -344,6 +670,612 @@ index 11dde9c..19689e9 100644
          lp.Print(ss.str(), LinePrinter::LineType::INFO);
          lp.KeepInfoLine();
      }
+@@ -353,6 +418,39 @@ class SyncConnection {
+         return WriteFdExactly(fd, buf.data(), buf.size());
+     }
+ 
++    // MeowArchMobile: write a whole batch of requests in ONE syscall.
++    //
++    // Sending them one write() at a time is measurably pathological: with Nagle
++    // enabled (adb never disables it) the second and later small writes wait for
++    // the peer to acknowledge the first, while the peer — which has answered
++    // request 1 and is now blocked in read() — is holding a delayed ACK. That
++    // is the classic Nagle/delayed-ACK deadlock and it costs a full ~40 ms per
++    // batch: listing 1000 directories with a window of 8 took 4.5 s, while a
++    // window of 1 (one request, one response, nothing outstanding) took 0.09 s.
++    // Coalescing the batch into a single write sidesteps it at any window size.
++    bool SendRequestBatch(const std::vector<std::pair<int, std::string>>& requests) {
++        size_t total = 0;
++        for (const auto& r : requests) {
++            if (r.second.length() > 1024) {
++                Error("SendRequest failed: path too long: %zu", r.second.length());
++                errno = ENAMETOOLONG;
++                return false;
++            }
++            total += sizeof(SyncRequest) + r.second.length();
++        }
++
++        std::vector<char> buf(total);
++        char* p = buf.data();
++        for (const auto& r : requests) {
++            SyncRequest req;
++            req.id = r.first;
++            req.path_length = r.second.length();
++            p = static_cast<char*>(mempcpy(p, &req, sizeof(req)));
++            p = static_cast<char*>(mempcpy(p, r.second.data(), r.second.length()));
++        }
++        return WriteFdExactly(fd, buf.data(), buf.size());
++    }
++
+     bool SendSend2(std::string_view path, mode_t mode, CompressionType compression, bool dry_run) {
+         if (path.length() > 1024) {
+             Error("SendRequest failed: path too long: %zu", path.length());
+@@ -405,6 +503,54 @@ class SyncConnection {
+         return WriteFdExactly(fd, buf.data(), buf.size());
+     }
+ 
++    // MeowArchMobile: many RECV requests in ONE write, so a batch of small
++    // files does not pay a round trip each (see SendRequestBatch for why one
++    // write matters). Compression is uniform across a batch: it is resolved
++    // once by the caller.
++    bool SendRecv2Batch(const std::vector<std::string>& paths, CompressionType compression) {
++        Block buf;
++        size_t total = 0;
++        for (const auto& p : paths) {
++            if (p.length() > 1024) {
++                Error("SendRequest failed: path too long: %zu", p.length());
++                errno = ENAMETOOLONG;
++                return false;
++            }
++            total += sizeof(SyncRequest) + p.length() + sizeof(syncmsg::recv_v2_setup);
++        }
++        buf.resize(total);
++
++        syncmsg setup;
++        setup.recv_v2_setup.id = ID_RECV_V2;
++        setup.recv_v2_setup.flags = 0;
++        switch (compression) {
++            case CompressionType::None:
++                break;
++            case CompressionType::Brotli:
++                setup.recv_v2_setup.flags = kSyncFlagBrotli;
++                break;
++            case CompressionType::LZ4:
++                setup.recv_v2_setup.flags = kSyncFlagLZ4;
++                break;
++            case CompressionType::Zstd:
++                setup.recv_v2_setup.flags = kSyncFlagZstd;
++                break;
++            case CompressionType::Any:
++                LOG(FATAL) << "unexpected CompressionType::Any";
++        }
++
++        char* p = buf.data();
++        for (const auto& path : paths) {
++            SyncRequest req;
++            req.id = ID_RECV_V2;
++            req.path_length = path.length();
++            p = static_cast<char*>(mempcpy(p, &req, sizeof(req)));
++            p = static_cast<char*>(mempcpy(p, path.data(), path.length()));
++            p = static_cast<char*>(mempcpy(p, &setup.recv_v2_setup, sizeof(setup.recv_v2_setup)));
++        }
++        return WriteFdExactly(fd, buf.data(), buf.size());
++    }
++
+     bool SendRecv2(const std::string& path, CompressionType compression) {
+         if (path.length() > 1024) {
+             Error("SendRequest failed: path too long: %zu", path.length());
+@@ -527,6 +673,9 @@ class SyncConnection {
+         return SendRequest(have_ls_v2_ ? ID_LIST_V2 : ID_LIST_V1, path);
+     }
+ 
++    bool HaveStat2() const { return have_stat_v2_; }
++    int LsId() const { return have_ls_v2_ ? ID_LIST_V2 : ID_LIST_V1; }
++
+   private:
+     template <bool v2>
+     static bool FinishLsImpl(borrowed_fd fd, const std::function<sync_ls_cb>& callback) {
+@@ -1002,6 +1151,7 @@ class SyncConnection {
+ 
+ static bool sync_ls(SyncConnection& sc, const std::string& path,
+                     const std::function<sync_ls_cb>& func) {
++    g_stats_ls_requests++;
+     return sc.SendLs(path) && sc.FinishLs(func);
+ }
+ 
+@@ -1014,6 +1164,7 @@ static bool sync_lstat(SyncConnection& sc, const std::string& path, struct stat*
+ }
+ 
+ static bool sync_stat_fallback(SyncConnection& sc, const std::string& path, struct stat* st) {
++    g_stats_stat_requests++;
+     if (sync_stat(sc, path, st)) {
+         return true;
+     }
+@@ -1154,12 +1305,11 @@ static bool sync_recv_v1(SyncConnection& sc, const char* rpath, const char* lpat
+     return true;
+ }
+ 
+-static bool sync_recv_v2(SyncConnection& sc, const char* rpath, const char* lpath, const char* name,
++// MeowArchMobile: split from sync_recv_v2 so a batch of requests can be written
++// in one go and their bodies read back in order. Everything after the request
++// is unchanged; the caller has already put |rpath| on the wire.
++static bool recv_v2_body(SyncConnection& sc, const char* rpath, const char* lpath, const char* name,
+                          uint64_t expected_size, CompressionType compression) {
+-    compression = sc.ResolveCompressionType(compression);
+-
+-    if (!sc.SendRecv2(rpath, compression)) return false;
+-
+     adb_unlink(lpath);
+     unique_fd lfd(adb_creat(lpath, 0644));
+     if (lfd < 0) {
+@@ -1263,6 +1413,13 @@ static bool sync_recv_v2(SyncConnection& sc, const char* rpath, const char* lpat
+     }
+ }
+ 
++static bool sync_recv_v2(SyncConnection& sc, const char* rpath, const char* lpath, const char* name,
++                         uint64_t expected_size, CompressionType compression) {
++    compression = sc.ResolveCompressionType(compression);
++    if (!sc.SendRecv2(rpath, compression)) return false;
++    return recv_v2_body(sc, rpath, lpath, name, expected_size, compression);
++}
++
+ static bool sync_recv(SyncConnection& sc, const char* rpath, const char* lpath, const char* name,
+                       uint64_t expected_size, CompressionType compression) {
+     if (sc.HaveSendRecv2()) {
+@@ -1272,6 +1429,79 @@ static bool sync_recv(SyncConnection& sc, const char* rpath, const char* lpath,
+     }
+ }
+ 
++// Upper bound on the BYTES of one request batch. A batch is written before any
++// of its answers are read, so it must always fit in the peer's receive buffer:
++// if it did not, the writer would block while the peer is blocked writing the
++// previous batch's answers, and neither side could make progress. adbd's
++// client-facing sockets set SO_RCVBUF to CHUNK_SIZE (64 KiB, see
++// adb_listeners.cpp), so half that is safe at any window size.
++static constexpr size_t kMaxBatchBytes = 32 * 1024;
++
++// Splits a request list into [begin, end) ranges that satisfy both the count
++// and the byte limit, with |per_request| bytes of fixed overhead each. Every
++// range holds at least one request, so progress is guaranteed even when a
++// single request is larger than the byte limit.
++static std::vector<std::pair<size_t, size_t>> PlanBatches(const std::vector<std::string>& paths,
++                                                         size_t max_count, size_t per_request) {
++    std::vector<std::pair<size_t, size_t>> ranges;
++    size_t begin = 0;
++    while (begin < paths.size()) {
++        size_t end = begin;
++        size_t bytes = 0;
++        while (end < paths.size() && end - begin < max_count &&
++               (end == begin || bytes + per_request + paths[end].size() <= kMaxBatchBytes)) {
++            bytes += per_request + paths[end].size();
++            end++;
++        }
++        if (end == begin) end = begin + 1;  // one oversized request still goes
++        ranges.emplace_back(begin, end);
++        begin = end;
++    }
++    return ranges;
++}
++
++// MeowArchMobile: pipelined small-file pull.
++//
++// Pulling a directory of many small files used to cost one round trip per
++// file: send RECV, wait for the whole body, then send the next. The bytes are
++// irrelevant at that size — the latency is everything. adbd answers requests in
++// order on one connection and each RECV body ends with ID_DONE, so a batch of
++// requests can go out in one write and their bodies be read back in the same
++// order, which turns N round trips into ceil(N / window).
++//
++// Only files whose listed size fits the batch budget are batched; anything
++// larger is sent one at a time so a single huge file cannot be held behind a
++// queue of its neighbours and so memory stays bounded (a body is still read and
++// written a SYNC_DATA_MAX block at a time).
++static bool sync_recv_batch(SyncConnection& sc, const std::vector<const copyinfo*>& files,
++                            CompressionType compression) {
++    compression = sc.ResolveCompressionType(compression);
++
++    std::vector<std::string> paths;
++    paths.reserve(files.size());
++    for (const copyinfo* ci : files) paths.push_back(ci->rpath);
++
++    // Chunk the REQUEST write by the same byte bound the listing batches use,
++    // even though the caller already caps the batch by count and by payload:
++    // 64 paths of near-maximum length would exceed the peer's receive buffer on
++    // their own. Reading each chunk's bodies in order before sending the next
++    // keeps the stream in step, so the ordering property is unchanged.
++    for (const auto& [begin, end] : PlanBatches(
++                 paths, files.size(), sizeof(SyncRequest) + sizeof(syncmsg::recv_v2_setup))) {
++        std::vector<std::string> chunk(paths.begin() + begin, paths.begin() + end);
++        if (!sc.SendRecv2Batch(chunk, compression)) return false;
++
++        for (size_t i = begin; i < end; i++) {
++            const copyinfo* ci = files[i];
++            if (!recv_v2_body(sc, ci->rpath.c_str(), ci->lpath.c_str(), nullptr, ci->size,
++                              compression)) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
+ bool do_sync_ls(const char* path) {
+     SyncConnection sc;
+     if (!sc.IsValid()) return false;
+@@ -1544,63 +1774,205 @@ bool do_sync_push(const std::vector<const char*>& srcs, const char* dst, bool sy
+     return success;
+ }
+ 
+-static bool remote_build_list(SyncConnection& sc, std::vector<copyinfo>* file_list,
+-                              const std::string& rpath, const std::string& lpath) {
+-    std::vector<copyinfo> dirlist;
+-    std::vector<copyinfo> linklist;
+-
+-    // Add an entry for the current directory to ensure it gets created before pulling its contents.
+-    copyinfo ci(android::base::Dirname(lpath), android::base::Dirname(rpath),
+-                android::base::Basename(lpath), S_IFDIR);
+-    file_list->push_back(ci);
++// MeowArchMobile: breadth-first, pipelined directory walk.
++//
++// Upstream walks depth-first and issues one LIST, waiting for its answer before
++// asking for the next directory, so the walk costs one round trip per
++// directory. That is what "pull: building file list..." was spending its time
++// on: ~8 ms per directory even over loopback, so a tree of a thousand small
++// directories burned ~8 s before a single byte moved.
++//
++// The protocol needs no change to fix it. adbd answers sync requests strictly
++// in order on one connection, and a LIST always ends with ID_DONE (even when
++// the directory cannot be opened, where it is simply empty), so a batch of LIST
++// requests can be written back to back and their answers read back in the same
++// order. The walk then costs ceil(N / window) round trips instead of N.
++//
++// The ordering property that matters is kept: a directory's own entry is pushed
++// before its children are discovered, so every parent precedes its children in
++// |file_list| and copy_remote_dir_local can still create directories and write
++// files in list order.
++//
++// ADB_SYNC_LIST_WINDOW overrides the batch size (1 reproduces the old
++// sequential behaviour); ADB_SYNC_STATS prints the resulting counts.
++// A file larger than this is pulled on its own: batching it would make the
++// other files in the batch wait for a gigabyte to arrive first.
++static constexpr uint64_t kBatchFileMax = 4 * 1024 * 1024;
++// Upper bound on the total size of one batch, so a batch never holds a huge
++// amount of in-flight data no matter how many small files are in the tree.
++static constexpr uint64_t kBatchBytesMax = 16 * 1024 * 1024;
++
++static size_t SyncRecvWindow() {
++    static const size_t window = [] {
++        const char* env = getenv("ADB_SYNC_RECV_WINDOW");
++        if (env) {
++            long v = strtol(env, nullptr, 10);
++            if (v > 0 && v < 1024) return static_cast<size_t>(v);
++        }
++        return static_cast<size_t>(64);
++    }();
++    return window;
++}
+ 
+-    // Put the files/dirs in rpath on the lists.
+-    auto callback = [&](unsigned mode, uint64_t size, uint64_t time, const char* name) {
+-        if (IsDotOrDotDot(name)) {
+-            return;
+-        }
++static size_t SyncListWindow() {
++    static const size_t window = [] {
++        const char* env = getenv("ADB_SYNC_LIST_WINDOW");
++        if (env) {
++            long v = strtol(env, nullptr, 10);
++            if (v > 0 && v < 4096) return static_cast<size_t>(v);
++        }
++        // Big enough to hide a realistic RTT, small enough that a pathological
++        // tree cannot queue thousands of requests: a LIST answer is ~20 bytes
++        // per entry plus the name, so 64 directories is tens of kilobytes of
++        // in-flight data.
++        return static_cast<size_t>(64);
++    }();
++    return window;
++}
+ 
+-        copyinfo ci(lpath, rpath, name, mode);
+-        if (S_ISDIR(mode)) {
+-            dirlist.push_back(ci);
+-        } else if (S_ISLNK(mode)) {
+-            linklist.push_back(ci);
+-        } else {
+-            if (!should_pull_file(ci.mode)) {
+-                sc.Warning("skipping special file '%s' (mode = 0o%o)", ci.rpath.c_str(), ci.mode);
+-                ci.skip = true;
+-            }
+-            ci.time = time;
+-            ci.size = size;
+-            file_list->push_back(ci);
+-        }
++static bool remote_build_list(SyncConnection& sc, std::vector<copyinfo>* file_list,
++                              const std::string& rpath, const std::string& lpath) {
++    struct PendingDir {
++        std::string rpath;
++        std::string lpath;
+     };
++    std::deque<PendingDir> queue{{rpath, lpath}};
++    const size_t window = SyncListWindow();
++
++    while (!queue.empty()) {
++        // Take one batch off the front: everything already known can be asked
++        // for at once, without waiting to learn what is inside any of it.
++        std::vector<PendingDir> batch;
++        batch.reserve(window);
++        for (size_t i = 0; i < window && !queue.empty(); i++) {
++            batch.push_back(std::move(queue.front()));
++            queue.pop_front();
++        }
++
++        // Symlinks need a stat to tell file from directory; those requests are
++        // batched the same way, after this batch's listings have been read.
++        std::vector<copyinfo> links;
++
++        std::vector<std::string> dir_paths;
++        dir_paths.reserve(batch.size());
++        for (const PendingDir& d : batch) dir_paths.push_back(d.rpath);
++        const auto dir_ranges =
++                PlanBatches(dir_paths, batch.size(), sizeof(SyncRequest));
++
++        for (const auto& [range_begin, range_end] : dir_ranges) {
++            std::vector<std::pair<int, std::string>> requests;
++            requests.reserve(range_end - range_begin);
++            const int ls_id = sc.LsId();
++            for (size_t i = range_begin; i < range_end; i++) {
++                g_stats_ls_requests++;
++                requests.emplace_back(ls_id, dir_paths[i]);
++            }
++            // Write the whole sub-batch first, then read its answers in order:
++            // that is what removes the round trip per directory. adbd answers
++            // in request order and every LIST ends with ID_DONE — even for a
++            // directory it cannot open, where the listing is simply empty — so
++            // the answers line up one to one with the requests.
++            if (!sc.SendRequestBatch(requests)) {
++                return false;
++            }
++            g_stats_ls_batches++;
++
++        for (size_t range_i = range_begin; range_i < range_end; range_i++) {
++            const PendingDir& d = batch[range_i];
++            // The directory's own entry, so it gets created before its contents.
++            file_list->push_back(copyinfo(android::base::Dirname(d.lpath),
++                                          android::base::Dirname(d.rpath),
++                                          android::base::Basename(d.lpath), S_IFDIR));
++
++            std::vector<copyinfo> dirlist;
++            auto callback = [&](unsigned mode, uint64_t size, uint64_t time, const char* name) {
++                if (IsDotOrDotDot(name)) {
++                    return;
++                }
+ 
+-    if (!sync_ls(sc, rpath, callback)) {
+-        return false;
+-    }
++                copyinfo ci(d.lpath, d.rpath, name, mode);
++                if (S_ISDIR(mode)) {
++                    dirlist.push_back(std::move(ci));
++                } else if (S_ISLNK(mode)) {
++                    links.push_back(std::move(ci));
++                } else {
++                    if (!should_pull_file(ci.mode)) {
++                        sc.Warning("skipping special file '%s' (mode = 0o%o)", ci.rpath.c_str(),
++                                   ci.mode);
++                        ci.skip = true;
++                    }
++                    ci.time = time;
++                    ci.size = size;
++                    file_list->push_back(std::move(ci));
++                }
++            };
+ 
+-    // Check each symlink we found to see whether it's a file or directory.
+-    for (copyinfo& link_ci : linklist) {
+-        struct stat st;
+-        if (!sync_stat_fallback(sc, link_ci.rpath, &st)) {
+-            sc.Warning("stat failed for path %s: %s", link_ci.rpath.c_str(), strerror(errno));
+-            continue;
+-        }
++            if (!sc.FinishLs(callback)) {
++                return false;
++            }
+ 
+-        if (S_ISDIR(st.st_mode)) {
+-            dirlist.emplace_back(std::move(link_ci));
+-        } else {
+-            file_list->emplace_back(std::move(link_ci));
++            for (copyinfo& ci : dirlist) {
++                queue.push_back(PendingDir{std::move(ci.rpath), std::move(ci.lpath)});
++            }
+         }
+-    }
+-
+-    // Recurse into each directory we found.
+-    while (!dirlist.empty()) {
+-        copyinfo current = dirlist.back();
+-        dirlist.pop_back();
+-        if (!remote_build_list(sc, file_list, current.rpath, current.lpath)) {
+-            return false;
++        }  // dir_ranges
++
++        // Classify the symlinks. With stat-v2 each request yields exactly one
++        // answer, so they can be pipelined; without it the v1 fallback path in
++        // sync_stat_fallback issues a variable number of round trips per link,
++        // which cannot be batched safely — keep the sequential version there.
++        if (!links.empty()) {
++            if (sc.HaveStat2()) {
++                std::vector<std::string> link_paths;
++                link_paths.reserve(links.size());
++                for (const copyinfo& link_ci : links) link_paths.push_back(link_ci.rpath);
++                const auto stat_ranges =
++                        PlanBatches(link_paths, links.size(), sizeof(SyncRequest));
++
++                for (const auto& [range_begin, range_end] : stat_ranges) {
++                    std::vector<std::pair<int, std::string>> stat_requests;
++                    stat_requests.reserve(range_end - range_begin);
++                    for (size_t i = range_begin; i < range_end; i++) {
++                        g_stats_stat_requests++;
++                        stat_requests.emplace_back(ID_STAT_V2, link_paths[i]);
++                    }
++                    // All or nothing within a sub-batch: either every request is
++                    // on the wire and every answer is coming back, or the walk
++                    // fails. Reading fewer answers than were requested would
++                    // desynchronise the stream.
++                    const bool sent_all = sc.SendRequestBatch(stat_requests);
++                    g_stats_stat_batches++;
++                    for (size_t i = range_begin; i < range_end; i++) {
++                        struct stat st;
++                        memset(&st, 0, sizeof(st));
++                        if (!sent_all || !sc.FinishStat(&st)) {
++                            sc.Warning("stat failed for path %s: %s", links[i].rpath.c_str(),
++                                       strerror(errno));
++                            continue;
++                        }
++                        if (S_ISDIR(st.st_mode)) {
++                            queue.push_back(PendingDir{links[i].rpath, links[i].lpath});
++                        } else {
++                            file_list->push_back(std::move(links[i]));
++                        }
++                    }
++                }
++            } else {
++                for (copyinfo& link_ci : links) {
++                    struct stat st;
++                    g_stats_stat_requests++;
++                    if (!sync_stat_fallback(sc, link_ci.rpath, &st)) {
++                        sc.Warning("stat failed for path %s: %s", link_ci.rpath.c_str(),
++                                   strerror(errno));
++                        continue;
++                    }
++                    if (S_ISDIR(st.st_mode)) {
++                        queue.push_back(PendingDir{link_ci.rpath, link_ci.lpath});
++                    } else {
++                        file_list->push_back(std::move(link_ci));
++                    }
++                }
++            }
+         }
+     }
+ 
+@@ -1629,38 +2001,102 @@ static bool copy_remote_dir_local(SyncConnection& sc, std::string rpath, std::st
+     ensure_trailing_separators(lpath, rpath);
+ 
+     // Recursively build the list of files to copy.
++    bool stats_listing_printed = false;
+     sc.Printf("pull: building file list...");
+     std::vector<copyinfo> file_list;
++    auto t_list_start = std::chrono::steady_clock::now();
+     if (!remote_build_list(sc, &file_list, rpath, lpath)) {
+         return false;
+     }
++    if (getenv("ADB_SYNC_STATS")) {
++        // LinePrinter buffers INFO lines off-tty, so go straight to stderr for
++        // this instrumentation.
++        auto t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_list_start).count();
++        fprintf(stderr,
++                "STATS listing: %zu entries, %.3f s, %d LIST requests in %d batches, "
++                "%d STAT requests in %d batches\n",
++                file_list.size(), t, g_stats_ls_requests, g_stats_ls_batches, g_stats_stat_requests,
++                g_stats_stat_batches);
++        stats_listing_printed = true;
++    }
+ 
+     sc.ComputeExpectedTotalBytes(file_list);
+ 
+     int skipped = 0;
+-    for (const copyinfo &ci : file_list) {
+-        if (!ci.skip) {
+-            if (S_ISDIR(ci.mode)) {
+-                // Entry is for an empty directory, create it and continue.
+-                // TODO(b/25457350): We don't preserve permissions on directories.
+-                if (!mkdirs(ci.lpath))  {
+-                    sc.Error("failed to create directory '%s': %s",
+-                             ci.lpath.c_str(), strerror(errno));
+-                    return false;
++
++    // MeowArchMobile: create every directory before transferring any file.
++    // The list is breadth-first with each parent preceding its children, so one
++    // pass in order is sufficient, and doing it up front means the transfer
++    // pass below never has to break a batch to mkdir.
++    for (const copyinfo& ci : file_list) {
++        if (ci.skip || !S_ISDIR(ci.mode)) continue;
++        // TODO(b/25457350): We don't preserve permissions on directories.
++        if (!mkdirs(ci.lpath)) {
++            sc.Error("failed to create directory '%s': %s", ci.lpath.c_str(), strerror(errno));
++            return false;
++        }
++    }
++
++    // Files. Small ones are batched into one write and their bodies read back
++    // in order, which turns one round trip per file into one per batch; large
++    // ones go one at a time so a multi-gigabyte file is not queued behind
++    // dozens of its neighbours and memory stays bounded.
++    const size_t window = SyncRecvWindow();
++    const bool batchable = sc.HaveSendRecv2();
++    std::vector<const copyinfo*> pending;
++    uint64_t pending_bytes = 0;
++
++    auto flush = [&]() -> bool {
++        if (pending.empty()) return true;
++        bool ok;
++        if (pending.size() == 1 || !batchable) {
++            ok = sync_recv(sc, pending[0]->rpath.c_str(), pending[0]->lpath.c_str(), nullptr,
++                           pending[0]->size, compression);
++        } else {
++            g_stats_recv_batches++;
++            ok = sync_recv_batch(sc, pending, compression);
++        }
++        if (ok && copy_attrs) {
++            for (const copyinfo* ci : pending) {
++                if (set_time_and_mode(ci->lpath, ci->time, ci->mode)) {
++                    ok = false;
++                    break;
+                 }
+-                continue;
+             }
++        }
++        pending.clear();
++        pending_bytes = 0;
++        return ok;
++    };
++
++    for (const copyinfo& ci : file_list) {
++        if (ci.skip) {
++            skipped++;
++            continue;
++        }
++        if (S_ISDIR(ci.mode)) continue;  // already created above
+ 
++        if (!batchable || ci.size > kBatchFileMax) {
++            if (!flush()) return false;
+             if (!sync_recv(sc, ci.rpath.c_str(), ci.lpath.c_str(), nullptr, ci.size, compression)) {
+                 return false;
+             }
++            if (copy_attrs && set_time_and_mode(ci.lpath, ci.time, ci.mode)) return false;
++            continue;
++        }
+ 
+-            if (copy_attrs && set_time_and_mode(ci.lpath, ci.time, ci.mode)) {
+-                return false;
+-            }
+-        } else {
+-            skipped++;
++        if (pending.size() >= window || pending_bytes + ci.size > kBatchBytesMax) {
++            if (!flush()) return false;
+         }
++        pending.push_back(&ci);
++        pending_bytes += ci.size;
++    }
++    if (!flush()) return false;
++
++    if (stats_listing_printed) {
++        // Printed here rather than at listing time, because the RECV batching
++        // only exists once the transfer has run.
++        fprintf(stderr, "STATS recv: %d batched RECV groups\n", g_stats_recv_batches);
+     }
+ 
+     sc.RecordFilesSkipped(skipped);
 diff --git a/client/main.cpp b/client/main.cpp
 index 50a60a7..1cb0b97 100644
 --- a/client/main.cpp

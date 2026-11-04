@@ -1,0 +1,56 @@
+From: MeowArchMobile
+Subject: [PATCH] daemon/file_sync_service.cpp: write a listing in one go
+
+do_list() wrote each directory entry as two separate writes (header,
+then name), so listing a directory of N entries cost 2N small writes.
+Each of those after the first is subject to the Nagle/delayed-ACK
+interaction described in the adb_listeners.cpp patch, and each is also
+just a syscall that did not need to happen.
+
+Build the whole listing — including the trailing ID_DONE — in one buffer
+and write it once. The bytes on the wire are identical, so this is
+invisible to a stock client.
+
+diff --git a/daemon/file_sync_service.cpp b/daemon/file_sync_service.cpp
+index 8dc1407..178a160 100644
+--- a/daemon/file_sync_service.cpp
++++ b/daemon/file_sync_service.cpp
+@@ -204,6 +204,17 @@ static bool do_list(int s, const char* path) {
+         msg_id = ID_DENT_V1;
+     }
+ 
++    // MeowArchMobile: build the whole listing in one buffer and write it once.
++    // Upstream writes each entry as two syscalls (header, then name), so a
++    // directory of N entries costs 2N small writes. With Nagle on — and adb
++    // never disables it — every one of those after the first waits for the
++    // previous segment to be acknowledged, which measured ~6 ms per directory
++    // and made "pull: building file list..." dominate a recursive pull of a
++    // tree with many small directories. One write per listing removes the
++    // interaction entirely.
++    std::string out;
++    out.reserve(4096);
++
+     std::unique_ptr<DIR, int(*)(DIR*)> d(opendir(path), closedir);
+     if (!d) goto done;
+ 
+@@ -239,16 +250,15 @@ static bool do_list(int s, const char* path) {
+         size_t d_name_length = strlen(de->d_name);
+         msg.namelen = d_name_length;
+ 
+-        if (!WriteFdExactly(s, &msg, sizeof(msg)) ||
+-            !WriteFdExactly(s, de->d_name, d_name_length)) {
+-            return false;
+-        }
++        out.append(reinterpret_cast<const char*>(&msg), sizeof(msg));
++        out.append(de->d_name, d_name_length);
+     }
+ 
+ done:
+     memset(&msg, 0, sizeof(msg));
+     msg.id = ID_DONE;
+-    return WriteFdExactly(s, &msg, sizeof(msg));
++    out.append(reinterpret_cast<const char*>(&msg), sizeof(msg));
++    return WriteFdExactly(s, out.data(), out.size());
+ }
+ 
+ static bool do_list_v1(int s, const char* path) {

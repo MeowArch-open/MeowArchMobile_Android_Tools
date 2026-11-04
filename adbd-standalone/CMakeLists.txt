@@ -83,7 +83,9 @@ message(STATUS "AOSP tree: ${AOSP_ROOT}")
 foreach(_patch
         0001-fdevent.h-include-vector-explicitly.patch
         0002-main.cpp-ADBD_NO_AUTH-env-on-host.patch
-        0003-main.cpp-enable-usb-ffs-on-glibc.patch)
+        0003-main.cpp-enable-usb-ffs-on-glibc.patch
+        0004-adb_listeners.cpp-disable-nagle-on-accepted-sockets.patch
+        0005-file_sync_service.cpp-batch-listing-writes.patch)
     execute_process(
         COMMAND patch -N -s --fuzz=0 --no-backup-if-mismatch -r /dev/null -d "${ADB}" -p1 -i
                 "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"
