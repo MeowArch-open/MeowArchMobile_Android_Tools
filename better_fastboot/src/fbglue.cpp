@@ -28,8 +28,8 @@ namespace fbglue {
 namespace {
 
 // Short name used in messages the completion generator emits. The installed
-// commands are /usr/bin/fastboot-m and its long alias fastboot-meowarch.
-constexpr const char* kProgramName = "fastboot-m";
+// commands are /usr/bin/mfastboot and its long alias fastboot-meowarch.
+constexpr const char* kProgramName = "mfastboot";
 
 // Join suggestion list: "'a', 'b'" — quotes added per candidate.
 std::string QuoteList(const std::vector<std::string>& cands) {

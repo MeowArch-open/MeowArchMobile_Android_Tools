@@ -211,42 +211,42 @@ android-tools fastboot itself links libstdc++).
 
 ## Run
 
-The commands are `fastboot-m` and its alias `fastboot-meowarch` (both symlinks
-to the same binary). `fastboot-m` is short; the alias keeps old scripts
+The commands are `mfastboot` and its alias `fastboot-meowarch` (both symlinks
+to the same binary). `mfastboot` is short; the alias keeps old scripts
 working. Neither collides with the distro's android-tools, which owns
 `/usr/bin/fastboot` — both packages install side by side.
 
 USB (real phones): works wherever platform-tools works —
 
-    fastboot-m devices                 # bootloader mode
-    fastboot-m flash boot boot.img
-    fastboot-m -w                      # formats userdata (uses bundled mke2fs/make_f2fs)
+    mfastboot devices                 # bootloader mode
+    mfastboot flash boot boot.img
+    mfastboot -w                      # formats userdata (uses bundled mke2fs/make_f2fs)
 
-If `fastboot-m devices` is empty but `lsusb` sees the phone, it's udev
+If `mfastboot devices` is empty but `lsusb` sees the phone, it's udev
 permissions — install Android udev rules (Arch: `android-udev` AUR) or run
 as root.
 
 TCP/UDP fastboot (emulators, network fastboot):
 
-    fastboot-m -s tcp:192.168.1.20:5554 devices
+    mfastboot -s tcp:192.168.1.20:5554 devices
 
 ### MeowArchMobile additions
 
-    fastboot-m --list-langs              # en, zh_CN, zh_TW, ja
-    fastboot-m --lang=zh_CN devices      # one-shot language override
-    LANG=ja_JP.UTF-8 fastboot-m --help   # or via the usual locale variables
-    fastboot-m --no-color ...            # plain output (NO_COLOR=1 also works)
-    fastboot-m --color ...               # force colors even on a pipe
-    fastboot-m --no-progress ...         # no bar (NO_PROGRESS=1 also works)
-    fastboot-m --shell-completion=bash   # completion script (also zsh, fish)
+    mfastboot --list-langs              # en, zh_CN, zh_TW, ja
+    mfastboot --lang=zh_CN devices      # one-shot language override
+    LANG=ja_JP.UTF-8 mfastboot --help   # or via the usual locale variables
+    mfastboot --no-color ...            # plain output (NO_COLOR=1 also works)
+    mfastboot --color ...               # force colors even on a pipe
+    mfastboot --no-progress ...         # no bar (NO_PROGRESS=1 also works)
+    mfastboot --shell-completion=bash   # completion script (also zsh, fish)
 
 Typo handling — errors out immediately (before any `< waiting for any
 device >`), with a suggestion when something is close:
 
-    $ fastboot-m flass boot boot.img
-    fastboot-m: error: unknown command flass
+    $ mfastboot flass boot boot.img
+    mfastboot: error: unknown command flass
     Did you want 'flash'?
-    Run 'fastboot-m --help' for usage.
+    Run 'mfastboot --help' for usage.
 
 Progress bar (tty only): renders **one line, repainted in place** on the
 `Sending/Writing/Fetching/Uploading` lines, with percent, bytes, instantaneous
@@ -295,16 +295,16 @@ for byte wherever our addition sits.
 
 ### `flash-x`: flash straight out of a payload.bin
 
-    fastboot-m flash-x <partition> <payload.bin> [<entry-name>]
+    mfastboot flash-x <partition> <payload.bin> [<entry-name>]
 
 `payload.bin` is the OTA image container inside a factory/OTA zip. Upstream
 fastboot cannot read it: you have to unpack it first (`payload-dumper-go`,
 `magiskboot`, `unzip` + python), then flash the resulting `.img`. `flash-x`
 does both in one step:
 
-    fastboot-m flash-x boot_a payload.bin          # entry "boot" (suffix stripped)
-    fastboot-m flash-x boot payload.bin boot_b     # explicit entry name
-    fastboot-m flash-x system payload.bin          # same for dynamic partitions
+    mfastboot flash-x boot_a payload.bin          # entry "boot" (suffix stripped)
+    mfastboot flash-x boot payload.bin boot_b     # explicit entry name
+    mfastboot flash-x system payload.bin          # same for dynamic partitions
 
 What it does:
 
@@ -332,7 +332,7 @@ Two things to know before using it on a big partition:
   `super` entry wants several GiB). The location is `TMPDIR` on Linux
   (`/tmp` by default — often a tmpfs, i.e. RAM) and `%TMP%`/`GetTempPathW` on
   Windows. Point `TMPDIR` at a real disk for large extractions:
-  `TMPDIR=/var/tmp fastboot-m flash-x super payload.bin`.
+  `TMPDIR=/var/tmp mfastboot flash-x super payload.bin`.
 * The image is sized with `ftruncate64` on Windows, because the mingw i686
   build's `off_t` is 32 bits without `_FILE_OFFSET_BITS=64`; a plain
   `ftruncate` would silently clamp anything over 2 GiB. Verified end to end
@@ -370,17 +370,17 @@ matches the build — commands and long options come from the same tables that
 power Did-you-want, descriptions from the same generated help rows, and
 `--lang` completes the compiled-in language list:
 
-    fastboot-m --shell-completion=bash > /usr/share/bash-completion/completions/fastboot-m
-    fastboot-m --shell-completion=zsh  > /usr/share/zsh/site-functions/_fastboot-m
-    fastboot-m --shell-completion=fish > /usr/share/fish/vendor_completions.d/fastboot-m.fish
+    mfastboot --shell-completion=bash > /usr/share/bash-completion/completions/mfastboot
+    mfastboot --shell-completion=zsh  > /usr/share/zsh/site-functions/_mfastboot
+    mfastboot --shell-completion=fish > /usr/share/fish/vendor_completions.d/mfastboot.fish
 
 Each shell autoloads its completion by *command name*, so the package installs
 the same script a second time under `fastboot-meowarch` (`_fastboot-meowarch`,
 `fastboot-meowarch.fish`). The scripts themselves register for both names
-(`complete -F _fastboot_m fastboot-m fastboot-meowarch`, `#compdef fastboot-m
-fastboot-meowarch`, `complete -c fastboot-m -c fastboot-meowarch`).
+(`complete -F _mfastboot mfastboot fastboot-meowarch`, `#compdef mfastboot
+fastboot-meowarch`, `complete -c mfastboot -c fastboot-meowarch`).
 
-Both halves matter: dropping either one leaves `fastboot-m` with no completion
+Both halves matter: dropping either one leaves `mfastboot` with no completion
 at all — either fish/bash find no file to autoload for that name, or the file
 they do find only declares rules for the long name. `scripts/test-ux.sh`
 asserts both the file pair and the double registration.
@@ -393,7 +393,7 @@ What completes: all commands and options before/instead of a command;
 partitions for the *first* argument of `flash`/`flash:raw`/`erase`/`format`/
 `fetch` and of `flash-x` (any file for its payload argument, partition names
 again for the optional entry name); `*.img` files and directories for the *second and later* arguments of
-`flash`/`flash:raw` (so `fastboot-m flash boot_a <TAB>` offers `./boot.img`,
+`flash`/`flash:raw` (so `mfastboot flash boot_a <TAB>` offers `./boot.img`,
 not another partition name), any file for `fetch`'s output argument, and
 `*.img` for `boot`/`stage`/`wipe-super`; `*.zip` after `update`;
 getvar variable names after `getvar`; slots after `--slot`/`--set-active`/

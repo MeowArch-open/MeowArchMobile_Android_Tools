@@ -3,7 +3,7 @@
  *
  * Not an AOSP file: MeowArchMobile glue, backing the `flash-x` command.
  *
- *   fastboot-m flash-x <partition> <payload.bin> [<partition-in-payload>]
+ *   mfastboot flash-x <partition> <payload.bin> [<partition-in-payload>]
  *
  * payload.bin is the OTA container update_engine consumes: a "CrAU" header, a
  * protobuf DeltaArchiveManifest, and the partition data as a series of install

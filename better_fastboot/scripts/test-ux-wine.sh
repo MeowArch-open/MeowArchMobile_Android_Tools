@@ -82,7 +82,7 @@ if printf '%s' "$OUT" | grep -q "日本語"; then ok "ja --list-langs"; else bad
 
 # completion script generation (same generator as the Linux build)
 OUT="$("$FB" --shell-completion=bash 2>/dev/null | tr -d '\r')"
-if printf '%s' "$OUT" | grep -q "complete -F _fastboot_m fastboot-m fastboot-meowarch" && \
+if printf '%s' "$OUT" | grep -q "complete -F _mfastboot mfastboot fastboot-meowarch" && \
    printf '%s' "$OUT" | grep -q "flash"; then
     ok "--shell-completion=bash on Windows"
 else

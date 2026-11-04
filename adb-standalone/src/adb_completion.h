@@ -3,7 +3,7 @@
  *
  * Not an AOSP file: MeowArchMobile glue. `adb --shell-completion=bash|zsh|fish
  * [COMMAND]` prints a ready-to-source script; the package builds install one per
- * command name (adb-m and adb-meowarch) into each shell's vendor directory.
+ * command name (madb and adb-meowarch) into each shell's vendor directory.
  *
  * Generating from the binary is what keeps the vocabulary honest: commands come
  * from the same help table `adb help` renders (adb_help::Commands), so a command

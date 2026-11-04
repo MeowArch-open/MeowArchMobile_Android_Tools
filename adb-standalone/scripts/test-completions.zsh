@@ -5,7 +5,7 @@
 # context needed) and asserts the right vocabulary comes back at each word
 # position. Usage:
 #
-#   zsh scripts/test-completions.zsh <generated-_adb-m> [serial]
+#   zsh scripts/test-completions.zsh <generated-_madb> [serial]
 #
 # With a serial, the device-side checks (remote paths, the device's own
 # executables, package names) run for real against that device; without one they
@@ -18,17 +18,17 @@ setopt no_unset_err 2>/dev/null
 local script=${1:?usage: test-completions.zsh <completion-script> [serial] [adb-binary]}
 [[ -f $script ]] || { print "no such file: $script"; exit 2 }
 local serial=${2:-}
-# The completion's device-side helpers run `${words[1]}`, i.e. `adb-m`, which the
+# The completion's device-side helpers run `${words[1]}`, i.e. `madb`, which the
 # caller must have put on PATH (test-adb.sh symlinks it into a scratch bin).
 # This binary is only for the harness's own probing below.
-local adb_bin=${3:-adb-m}
+local adb_bin=${3:-madb}
 
-# The script must be named _adb-m for autoload, and it registers both command
+# The script must be named _madb for autoload, and it registers both command
 # names via its #compdef line.
 local tmpdir=$(mktemp -d)
-cp $script $tmpdir/_adb-m
+cp $script $tmpdir/_madb
 fpath=($tmpdir)
-autoload -Uz _adb-m
+autoload -Uz _madb
 
 typeset -g CAPTURED=""
 typeset -i pass=0 fail=0 skip=0
@@ -59,12 +59,12 @@ _files() { CAPTURED="${CAPTURED} <files>" }
 try() {
   local desc=$1 want=$2; shift 2
   CAPTURED=""
-  words=(adb-m "$@")
+  words=(madb "$@")
   CURRENT=${#words}
   # Call the AUTOLOADED name (dash, not underscore): zsh loads the file on
-  # first call, and the file's own trailing `_adb_m "$@"` then runs it. Calling
-  # _adb_m directly would hit an undefined function, since autoload is lazy.
-  _adb-m >/dev/null 2>&1
+  # first call, and the file's own trailing `_madb "$@"` then runs it. Calling
+  # _madb directly would hit an undefined function, since autoload is lazy.
+  _madb >/dev/null 2>&1
   if [[ $CAPTURED == *"$want"* ]]; then
     print "  ok   $desc"; pass+=1
   else

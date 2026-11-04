@@ -137,7 +137,7 @@ static const MsgEntry kJaTable[] = {
     {kUnknownPartition, "不明なパーティション '%s'"},
     {kDidYouMean, "'%s' のことですか？"},
     {kDidYouMeanList, "これらのいずれかのことですか: %s？"},
-    {kRunHelp, "使用法は 'fastboot-m --help' を実行してください。"},
+    {kRunHelp, "使用法は 'mfastboot --help' を実行してください。"},
     {kNoCommand, "コマンドがありません"},
     {kExpectedArgument, "引数が必要です"},
     {kEmptyOemCommand, "oem コマンドが空です"},

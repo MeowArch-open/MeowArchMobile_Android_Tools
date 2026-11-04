@@ -5,7 +5,7 @@
 # ZLE context needed) and asserts the right vocabulary comes back for each
 # word position. Usage:
 #
-#   zsh scripts/test-completions.zsh <path-to-generated-_fastboot-m>
+#   zsh scripts/test-completions.zsh <path-to-generated-_mfastboot>
 #
 # A real zsh is required (not installed by default everywhere); test-ux.sh
 # skips this when `zsh` is missing.
@@ -17,11 +17,11 @@ local script=${1:?usage: test-completions.zsh <completion-script>}
 
 local dir=${script:h}
 local fn=${script:t}
-# the file must be named _fastboot-m for autoload; copy if needed
+# the file must be named _mfastboot for autoload; copy if needed
 local tmpdir=$(mktemp -d)
-cp $script $tmpdir/_fastboot-m
+cp $script $tmpdir/_mfastboot
 fpath=($tmpdir)
-autoload -Uz _fastboot-m
+autoload -Uz _mfastboot
 
 typeset -g CAPTURED=""
 typeset -i pass=0 fail=0
@@ -52,9 +52,9 @@ _files() { CAPTURED="${CAPTURED} <files>" }
 try() {
   local desc=$1 want=$2; shift 2
   CAPTURED=""
-  words=(fastboot-m "$@")
+  words=(mfastboot "$@")
   CURRENT=${#words}
-  _fastboot-m >/dev/null 2>&1
+  _mfastboot >/dev/null 2>&1
   if [[ $CAPTURED == *"$want"* ]]; then
     print "  ok   $desc"; pass+=1
   else
@@ -84,9 +84,9 @@ try "flash2 -> img files"      "<files>"         "flash" "boot_a" ""
 try "flash:raw2 -> img files"  "<files>"         "flash:raw" "boot" ""
 run_flash2_negative() {
   CAPTURED=""
-  words=(fastboot-m flash boot_a "")
+  words=(mfastboot flash boot_a "")
   CURRENT=${#words}
-  _fastboot_m >/dev/null 2>&1
+  _mfastboot >/dev/null 2>&1
   if [[ $CAPTURED == *"vendor_boot"* ]]; then
     print "  FAIL flash2 offers partitions: '$CAPTURED'"; fail+=1
   else
@@ -102,9 +102,9 @@ try "flash-x2 -> files"        "<files>"         "flash-x" "boot" ""
 try "flash-x3 -> entries"      "vendor_boot"     "flash-x" "boot" "payload.bin" ""
 run_flashx_negative() {
   CAPTURED=""
-  words=(fastboot-m flash-x boot "")
+  words=(mfastboot flash-x boot "")
   CURRENT=${#words}
-  _fastboot_m >/dev/null 2>&1
+  _mfastboot >/dev/null 2>&1
   if [[ $CAPTURED == *"vendor_boot"* ]]; then
     print "  FAIL flash-x2 offers partitions: '$CAPTURED'"; fail+=1
   else

@@ -295,23 +295,23 @@ jobs:
           sudo -u builder bash -c 'makepkg -f'
           tar --zstd -xOf adb-meowarch-*.pkg.tar.zst .PKGINFO | grep '^arch = x86_64$'
           # The package name stays adb-meowarch (upgrades), but both command
-          # names ship: adb-m is the short one, adb-meowarch the original.
+          # names ship: madb is the short one, adb-meowarch the original.
           tar --zstd -xOf adb-meowarch-*.pkg.tar.zst .PKGINFO | grep -qx 'pkgname = adb-meowarch'
           tar --zstd -tf adb-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/adb-meowarch'
-          tar --zstd -tf adb-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/adb-m'
+          tar --zstd -tf adb-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/madb'
           tar --zstd -tf adb-meowarch-*.pkg.tar.zst | grep -qx 'usr/lib/adb-meowarch/adb'
           # Both names must be completable in all three shells, since both are
           # real executables on PATH.
           tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
-            grep -qx 'usr/share/bash-completion/completions/adb-m'
+            grep -qx 'usr/share/bash-completion/completions/madb'
           tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
             grep -qx 'usr/share/bash-completion/completions/adb-meowarch'
           tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
-            grep -qx 'usr/share/zsh/site-functions/_adb-m'
+            grep -qx 'usr/share/zsh/site-functions/_madb'
           tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
             grep -qx 'usr/share/zsh/site-functions/_adb-meowarch'
           tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
-            grep -qx 'usr/share/fish/vendor_completions.d/adb-m.fish'
+            grep -qx 'usr/share/fish/vendor_completions.d/madb.fish'
           tar --zstd -tf adb-meowarch-*.pkg.tar.zst |
             grep -qx 'usr/share/fish/vendor_completions.d/adb-meowarch.fish'
 
@@ -408,7 +408,7 @@ jobs:
           sudo -u builder bash -c 'makepkg -f'
           tar --zstd -xOf fastboot-meowarch-*.pkg.tar.zst .PKGINFO | grep '^arch = x86_64$'
           # both command names must be present in the package
-          tar --zstd -tf fastboot-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/fastboot-m'
+          tar --zstd -tf fastboot-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/mfastboot'
           tar --zstd -tf fastboot-meowarch-*.pkg.tar.zst | grep -qx 'usr/bin/fastboot-meowarch'
 
       - name: Upload package
@@ -551,9 +551,9 @@ jobs:
           ./fastboot.exe --shell-completion=bash > comp.bash 2>/dev/null
           ./fastboot.exe --shell-completion=zsh > comp.zsh 2>/dev/null
           ./fastboot.exe --shell-completion=fish > comp.fish 2>/dev/null
-          grep -q 'complete -F _fastboot_m fastboot-m fastboot-meowarch' comp.bash
-          grep -q '#compdef fastboot-m fastboot-meowarch' comp.zsh
-          grep -q "complete -c fastboot-m" comp.fish
+          grep -q 'complete -F _mfastboot mfastboot fastboot-meowarch' comp.bash
+          grep -q '#compdef mfastboot fastboot-meowarch' comp.zsh
+          grep -q "complete -c mfastboot" comp.fish
           # flash's second argument must complete files, not partitions
           grep -q '__fbma_arg_from 1 flash flash:raw' comp.fish
           grep -q 'zh_TW' comp.fish

@@ -112,7 +112,11 @@ if ! command -v script >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; 
 else
   MOCK="$HERE/tests/mock_device.py"
   IMG="$(mktemp /tmp/fbimg.XXXXXX)"; head -c 60000000 /dev/urandom > "$IMG"
-  PORT=5599
+  # Pick a FREE port rather than a fixed one. Port 5599 is exactly the port a
+  # device attached over TCP (or a locally running adbd) uses, and the mock
+  # silently failing to bind left the suite blocked forever in `script` — the
+  # fastboot client retried connecting to whatever else was listening there.
+  PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
   python3 "$MOCK" "$PORT" 2>/dev/null & MPID=$!
   sleep 0.5
   PTY="$(mktemp)"
@@ -225,13 +229,13 @@ OUT="$("$FB" --shell-completion=csh 2>&1)"; RC=$?
 if [ $RC -eq 1 ] && printf '%s' "$OUT" | grep -q "unknown shell 'csh'"; then
   ok "unknown shell errors (rc=1)"
   # Each shell autoloads a completion by *command name*, so the package must
-  # install the script under both fastboot-m and fastboot-meowarch; and the
+  # install the script under both mfastboot and fastboot-meowarch; and the
   # scripts must register for both (otherwise the short name gets nothing).
   for sh in bash zsh fish; do
     case $sh in
-      bash) out=$("$FB" --shell-completion=bash); want='complete -F _fastboot_m fastboot-m fastboot-meowarch' ;;
-      zsh)  out=$("$FB" --shell-completion=zsh);  want='#compdef fastboot-m fastboot-meowarch' ;;
-      fish) out=$("$FB" --shell-completion=fish); want='complete -c fastboot-m -c fastboot-meowarch' ;;
+      bash) out=$("$FB" --shell-completion=bash); want='complete -F _mfastboot mfastboot fastboot-meowarch' ;;
+      zsh)  out=$("$FB" --shell-completion=zsh);  want='#compdef mfastboot fastboot-meowarch' ;;
+      fish) out=$("$FB" --shell-completion=fish); want='complete -c mfastboot -c fastboot-meowarch' ;;
     esac
     case "$out" in
       *"$want"*) ok "$sh completion registers both command names" ;;
@@ -253,14 +257,14 @@ try() {
   local desc="\$1" want="\$2"; shift 2
   COMP_WORDS=("\$@"); COMP_CWORD=\$(( \${#COMP_WORDS[@]} - 1 ))
   COMPREPLY=()
-  _fastboot_m
+  _mfastboot
   case "\${COMPREPLY[*]}" in *"\$want"*) PASS=\$((PASS+1));; *) echo "  FAIL \$desc"; FAIL=\$((FAIL+1));; esac
 }
-try "cmds"  "flash"         fastboot-m ""
-try "parts" "vendor_boot"   fastboot-m "flash" ""
-try "vars"  "current-slot"  fastboot-m "getvar" ""
-try "langs" "zh_TW"         fastboot-m "--lang" ""
-try "slots" "other"         fastboot-m "--slot" ""
+try "cmds"  "flash"         mfastboot ""
+try "parts" "vendor_boot"   mfastboot "flash" ""
+try "vars"  "current-slot"  mfastboot "getvar" ""
+try "langs" "zh_TW"         mfastboot "--lang" ""
+try "slots" "other"         mfastboot "--slot" ""
 # flash PARTITION [FILENAME]: argument 1 is the partition, argument 2 is a file
 # (regression: the second slot used to complete command/partition names)
 cd /tmp/ct || exit 1
@@ -268,15 +272,15 @@ try_file() {
   local desc="\$1" want="\$2"; shift 2
   COMP_WORDS=("\$@"); COMP_CWORD=\$(( \${#COMP_WORDS[@]} - 1 ))
   COMPREPLY=()
-  _fastboot_m
+  _mfastboot
   case "\${COMPREPLY[*]}" in *"\$want"*) PASS=\$((PASS+1));; *) echo "  FAIL \$desc (got: \${COMPREPLY[*]})"; FAIL=\$((FAIL+1));; esac
 }
-try_file "flash2->img"  "boot.img"   fastboot-m flash boot_a ""
-try_file "flash2->./img" "./boot.img" fastboot-m flash boot_a "./"
-try_file "flash:raw2->img" "boot.img" fastboot-m flash:raw boot ""
+try_file "flash2->img"  "boot.img"   mfastboot flash boot_a ""
+try_file "flash2->./img" "./boot.img" mfastboot flash boot_a "./"
+try_file "flash:raw2->img" "boot.img" mfastboot flash:raw boot ""
 # flash-x PARTITION PAYLOAD [NAME]: partition, then a file, then a payload entry
-try_file "flash-x1->payload" "note.txt" fastboot-m flash-x boot ""
-COMP_WORDS=(fastboot-m flash-x boot ""); COMP_CWORD=3; COMPREPLY=(); _fastboot_m
+try_file "flash-x1->payload" "note.txt" mfastboot flash-x boot ""
+COMP_WORDS=(mfastboot flash-x boot ""); COMP_CWORD=3; COMPREPLY=(); _mfastboot
 case "\${COMPREPLY[*]}" in
   *vendor_boot*) echo "  FAIL flash-x3 should offer payload entries"; FAIL=\$((FAIL+1));;
   *) PASS=\$((PASS+1));;
@@ -298,15 +302,15 @@ else
   skip "zsh not installed (functional drive skipped; syntax-level checks above still ran)"
 fi
 # fish functional drive via `complete -C` (needs the binary on PATH as
-# fastboot-m, matching the completion's -c name)
+# mfastboot, matching the completion's -c name)
 if command -v fish >/dev/null 2>&1; then
   mkdir -p /tmp/fbcomp-fishbin /tmp/fbcomp-fishcomp
-  ln -sf "$(readlink -f "$FB")" /tmp/fbcomp-fishbin/fastboot-m
-  "$FB" --shell-completion=fish > /tmp/fbcomp-fishcomp/fastboot-m.fish
+  ln -sf "$(readlink -f "$FB")" /tmp/fbcomp-fishbin/mfastboot
+  "$FB" --shell-completion=fish > /tmp/fbcomp-fishcomp/mfastboot.fish
   FISHPASS=0; FISHFAIL=0
   fish_try() {
     # source the generated script, then ask fish for candidates
-    if fish -c "source /tmp/fbcomp-fishcomp/fastboot-m.fish; complete -C 'fastboot-m $2'" 2>/dev/null | grep -q -- "$3"; then
+    if fish -c "source /tmp/fbcomp-fishcomp/mfastboot.fish; complete -C 'mfastboot $2'" 2>/dev/null | grep -q -- "$3"; then
       ok "fish drive: $1"; FISHPASS=$((FISHPASS+1))
     else
       bad "fish drive: $1"; FISHFAIL=$((FISHFAIL+1))
@@ -323,13 +327,13 @@ if command -v fish >/dev/null 2>&1; then
   # partitions (the bug: fish's rule ignored the argument position)
   ( cd /tmp/ct && touch boot.img a.img && mkdir -p sub )
   fish_neg() {
-    if fish -c "source /tmp/fbcomp-fishcomp/fastboot-m.fish; cd /tmp/ct; complete -C 'fastboot-m $2'" 2>/dev/null | grep -qx -- "$3"; then
+    if fish -c "source /tmp/fbcomp-fishcomp/mfastboot.fish; cd /tmp/ct; complete -C 'mfastboot $2'" 2>/dev/null | grep -qx -- "$3"; then
       bad "fish drive: $1"; FISHFAIL=$((FISHFAIL+1))
     else
       ok "fish drive: $1"; FISHPASS=$((FISHPASS+1))
     fi
   }
-  if fish -c "source /tmp/fbcomp-fishcomp/fastboot-m.fish; cd /tmp/ct; complete -C 'fastboot-m flash boot_a '" 2>/dev/null | grep -qx -- "boot.img"; then
+  if fish -c "source /tmp/fbcomp-fishcomp/mfastboot.fish; cd /tmp/ct; complete -C 'mfastboot flash boot_a '" 2>/dev/null | grep -qx -- "boot.img"; then
     ok "fish drive: flash2->img"; FISHPASS=$((FISHPASS+1))
   else
     bad "fish drive: flash2->img"; FISHFAIL=$((FISHFAIL+1))
@@ -337,7 +341,7 @@ if command -v fish >/dev/null 2>&1; then
   fish_neg "flash2 no partitions" "flash boot_a " "vendor_boot"
   fish_try "flash-x3->entries" "flash-x boot p.bin " "vendor_boot"
   # the PAYLOAD position offers files, and only from the right directory
-  if fish -c "source /tmp/fbcomp-fishcomp/fastboot-m.fish; cd /tmp/ct; complete -C 'fastboot-m flash-x boot '" 2>/dev/null | grep -qx -- "note.txt"; then
+  if fish -c "source /tmp/fbcomp-fishcomp/mfastboot.fish; cd /tmp/ct; complete -C 'mfastboot flash-x boot '" 2>/dev/null | grep -qx -- "note.txt"; then
     ok "fish drive: flash-x2->files"; FISHPASS=$((FISHPASS+1))
   else
     bad "fish drive: flash-x2->files"; FISHFAIL=$((FISHFAIL+1))

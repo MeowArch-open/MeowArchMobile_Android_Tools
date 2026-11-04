@@ -18,7 +18,7 @@
 #
 # Package vs command name: the package keeps its original name
 # (fastboot-meowarch, unchanged so upgrades are seamless); the *commands* are
-# `fastboot-m` (short, primary) and `fastboot-meowarch` (kept as an alias so
+# `mfastboot` (short, primary) and `fastboot-meowarch` (kept as an alias so
 # existing scripts keep working). Neither collides with the distro's
 # android-tools, which owns /usr/bin/fastboot and its completion files — both
 # packages install side by side.
@@ -52,10 +52,10 @@ package() {
     install -Dm644 "$root/../aosp-adbd/system/extras/ext4_utils/mke2fs.conf" \
         "$libdir/mke2fs.conf"
 
-    # Two command names, one binary: fastboot-m (short, primary) and
+    # Two command names, one binary: mfastboot (short, primary) and
     # fastboot-meowarch (the original, kept as an alias).
     install -d "$pkgdir/usr/bin"
-    ln -s ../lib/fastboot-meowarch/fastboot "$pkgdir/usr/bin/fastboot-m"
+    ln -s ../lib/fastboot-meowarch/fastboot "$pkgdir/usr/bin/mfastboot"
     ln -s ../lib/fastboot-meowarch/fastboot "$pkgdir/usr/bin/fastboot-meowarch"
 
     # Shell completions for bash, zsh and fish — GENERATED from the built
@@ -71,7 +71,7 @@ package() {
     bashcomp="$("$root/build-native/fastboot" --shell-completion=bash)"
     zshcomp="$("$root/build-native/fastboot" --shell-completion=zsh)"
     fishcomp="$("$root/build-native/fastboot" --shell-completion=fish)"
-    for name in fastboot-m fastboot-meowarch; do
+    for name in mfastboot fastboot-meowarch; do
         printf '%s\n' "$bashcomp" |
             install -Dm644 /dev/stdin "$pkgdir/usr/share/bash-completion/completions/$name"
         printf '%s\n' "$zshcomp" |

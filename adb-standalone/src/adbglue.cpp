@@ -41,7 +41,7 @@ int EarlyInit(int argc, char** argv) {
             completion_shell = a.substr(19);
             // An optional next token names the command the script should
             // complete for: the package installs the same binary under two
-            // names (adb-m and adb-meowarch) and fish keys its rules on that
+            // names (madb and adb-meowarch) and fish keys its rules on that
             // name, so one generation per alias is needed.
             if (i + 1 < argc && argv[i + 1][0] != '-') completion_command = argv[++i];
         }
@@ -54,7 +54,7 @@ int EarlyInit(int argc, char** argv) {
         // Prefer the explicit name; argv[0] may carry a build-tree path
         // ("./build-native/adb"), which is not what a shell will type.
         std::string name = !completion_command.empty() ? completion_command
-                                                       : (argv[0] ? argv[0] : "adb-m");
+                                                       : (argv[0] ? argv[0] : "madb");
         exit(ShellCompletion(completion_shell, name));
     }
 
