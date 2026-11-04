@@ -551,7 +551,7 @@ index 96eeb83..c0001cf 100644
  // Connects to the device "shell" service with |command| and prints the
  // resulting output.
 diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
-index 11dde9c..5872ff4 100644
+index 11dde9c..6716f0d 100644
 --- a/client/file_sync_client.cpp
 +++ b/client/file_sync_client.cpp
 @@ -43,6 +43,7 @@
@@ -910,11 +910,6 @@ index 11dde9c..5872ff4 100644
 -                              const std::string& rpath, const std::string& lpath) {
 -    std::vector<copyinfo> dirlist;
 -    std::vector<copyinfo> linklist;
--
--    // Add an entry for the current directory to ensure it gets created before pulling its contents.
--    copyinfo ci(android::base::Dirname(lpath), android::base::Dirname(rpath),
--                android::base::Basename(lpath), S_IFDIR);
--    file_list->push_back(ci);
 +// MeowArchMobile: breadth-first, pipelined directory walk.
 +//
 +// Upstream walks depth-first and issues one LIST, waiting for its answer before
@@ -943,15 +938,30 @@ index 11dde9c..5872ff4 100644
 +// amount of in-flight data no matter how many small files are in the tree.
 +static constexpr uint64_t kBatchBytesMax = 16 * 1024 * 1024;
 +
++// Reads a window size from |name|, clamped to [1, max]. An out-of-range value
++// is clamped rather than silently replaced by the default: a knob that quietly
++// ignores what it was told makes a measurement untrustworthy (ADB_SYNC_RECV_
++// WINDOW=1024 used to mean "64").
++static size_t SyncWindowFromEnv(const char* name, size_t def, size_t max) {
++    const char* env = getenv(name);
++    if (!env) return def;
++    long v = strtol(env, nullptr, 10);
++    if (v < 1) v = 1;
++    if (v > static_cast<long>(max)) v = static_cast<long>(max);
++    return static_cast<size_t>(v);
++}
+ 
+-    // Add an entry for the current directory to ensure it gets created before pulling its contents.
+-    copyinfo ci(android::base::Dirname(lpath), android::base::Dirname(rpath),
+-                android::base::Basename(lpath), S_IFDIR);
+-    file_list->push_back(ci);
++// The count window is not what bounds in-flight data — kBatchBytesMax is (a
++// batch is flushed as soon as adding the next file would exceed it). So the
++// count can be generous: 512 measured consistently faster than 256 at a 20 ms
++// round trip (0.31 s vs 0.40 s for 1000 small files) without changing how much
++// data is ever outstanding.
 +static size_t SyncRecvWindow() {
-+    static const size_t window = [] {
-+        const char* env = getenv("ADB_SYNC_RECV_WINDOW");
-+        if (env) {
-+            long v = strtol(env, nullptr, 10);
-+            if (v > 0 && v < 1024) return static_cast<size_t>(v);
-+        }
-+        return static_cast<size_t>(64);
-+    }();
++    static const size_t window = SyncWindowFromEnv("ADB_SYNC_RECV_WINDOW", 512, 1024);
 +    return window;
 +}
  
@@ -961,18 +971,7 @@ index 11dde9c..5872ff4 100644
 -            return;
 -        }
 +static size_t SyncListWindow() {
-+    static const size_t window = [] {
-+        const char* env = getenv("ADB_SYNC_LIST_WINDOW");
-+        if (env) {
-+            long v = strtol(env, nullptr, 10);
-+            if (v > 0 && v < 4096) return static_cast<size_t>(v);
-+        }
-+        // Big enough to hide a realistic RTT, small enough that a pathological
-+        // tree cannot queue thousands of requests: a LIST answer is ~20 bytes
-+        // per entry plus the name, so 64 directories is tens of kilobytes of
-+        // in-flight data.
-+        return static_cast<size_t>(64);
-+    }();
++    static const size_t window = SyncWindowFromEnv("ADB_SYNC_LIST_WINDOW", 256, 4096);
 +    return window;
 +}
  

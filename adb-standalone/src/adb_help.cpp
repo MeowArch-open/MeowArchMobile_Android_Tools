@@ -145,10 +145,10 @@ const char* kEnvironment =
     " $NO_PROGRESS             disable the transfer progress bar (same as --no-progress)\n"
     " $NO_COLOR                disable colored output (same as --no-color)\n"
     " $ADB_SYNC_LIST_WINDOW    directories listed per round trip when pulling a\n"
-    "                          directory [default=64, min=1; 1 is upstream's\n"
+    "                          directory [default=256, max=4096; 1 is upstream's\n"
     "                          sequential behaviour]\n"
     " $ADB_SYNC_RECV_WINDOW    small files fetched per round trip when pulling a\n"
-    "                          directory [default=64, min=1]\n"
+    "                          directory [default=512, max=1024]\n"
     " $ADB_SYNC_STATS          print sync request/batch statistics to stderr\n";
 
 const char* kDocsLine =
