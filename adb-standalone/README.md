@@ -221,24 +221,6 @@ mirroring soong's `windows:` blocks:
 * mingw-w64 ships no libc++, so this build uses libstdc++. Checked rather than
   assumed: both `is_standard_layout` asserts in `types.h` compile clean under
   g++ and clang+libstdc++.
-
-Three upstream bugs only surface on Windows, so they are patched here
-(`patches/0004`, `patches/0005`) rather than worked around in the build:
-
-* `sysdeps/win32/stat.cpp` passes a `struct adb_stat*` to `wstat()`. That
-  compiles only when the toolchain aliases `struct stat` to the fixed-size
-  struct — Google's prebuilt mingw does, distro mingw-w64 does not, where
-  `wstat()` takes `struct _stat64*`. Now it stats into the fixed-size struct
-  and copies, with a `static_assert` on the layout equivalence.
-* `_FILE_OFFSET_BITS=64` must reach **every** translation unit. mingw picks
-  both `sizeof(struct stat)` (48 vs 56) and which `wstat` entry point is used
-  from it, so a writer compiled one way and a reader the other silently
-  disagree about where `st_size` is.
-* `is_root_dir()` only recognized `/`, but mingw's `dirname("/tmp")` returns
-  `\`, so the directory-creation walk in `copy_local_dir_remote()` never
-  terminated and every directory push died with `std::bad_alloc`. It now
-  accepts either separator, and the loop also stops on a `dirname()` fixed
-  point (`C:\`, `//x`) since that shape hangs on its own.
 * GCC cannot parse libbase's clang-only thread-safety annotations
   (`static void f(int) EXCLUDES(m)` is a hard error) or `_Nonnull`, so
   `shim/gnu_compat/` supplies neutral versions. The thread-annotation shim is
@@ -246,6 +228,38 @@ Three upstream bugs only surface on Windows, so they are patched here
   **per target** via `adb_apply_gnu_compat()`, because a global
   `add_compile_options(-include ...)` would also reach the vendored protobuf
   tree and break its configure.
+
+Three upstream defects only surface on Windows, so they are patched there
+(`patches/0004`, `0005`, `0006`) rather than worked around in the build. Each
+patch body carries the measurement that found it.
+
+* `sysdeps/win32/stat.cpp` passes a `struct adb_stat*` to `wstat()`. That
+  compiles only when the toolchain aliases `struct stat` to the fixed-size
+  struct — Google's prebuilt mingw does, distro mingw-w64 does not, where
+  `wstat()` takes `struct _stat64*`. Now it stats into the fixed-size struct
+  and copies, with a `static_assert` on the layout equivalence.
+* `is_root_dir()` only recognized `/`, but mingw's `dirname("/tmp")` returns
+  `\`, so the directory-creation walk in `copy_local_dir_remote()` never
+  terminated and every directory push died with `std::bad_alloc`. It now
+  accepts either separator, and the loop also stops on a `dirname()` fixed
+  point (`C:\`, `//x`) since that shape hangs on its own.
+* `client/usb_windows.cpp`'s `_power_notification_thread()` created a hidden
+  window for resume notifications and checked it with `LOG(FATAL)`. A server
+  with no desktop to create a window on — session 0, a service account, a
+  headless host — therefore died before writing the ack `launch_server()`
+  waits for, and the only thing the client reported was `could not read ok
+  from ADB Server` / `failed to start daemon`. Both failures are now warnings
+  and the thread returns: the lost feature is the kick-after-resume, while
+  `device_poll_thread()` keeps finding devices. The thread's own comment had
+  already flagged the case as "not sure".
+
+One further requirement is a build-config rule rather than a patch:
+`_FILE_OFFSET_BITS=64` must reach **every** translation unit. mingw picks both
+`sizeof(struct stat)` (48 vs 56) and which `wstat` entry point is used from it,
+so a writer compiled one way and a reader the other silently disagree about
+where `st_size` is — that is how a win32 directory push read a garbage size out
+of `local_build_list()`'s `lstat` and died in `Block::resize()`, while
+single-file pushes worked.
 
 Smoke-test the .exe on Linux via wine (`bash scripts/test-adb-wine.sh`); CI runs
 it natively on a `windows-latest` runner.
@@ -312,8 +326,22 @@ binary against the **native Linux adbd** over TCP, so a real sync push/pull
 round trip has to come back byte-identical through `ws2_32`, `sysdeps_win32`'s
 FD indirection and `adb_writev` over WSABUF. It also checks each compression
 algorithm (`-z lz4|zstd|brotli|none`) survives the cross-compiled codecs.
-34 checks, all of which pass against the native Linux adbd; wine is required
-because adbd is a Linux ELF and cannot run on a `windows-latest` runner.
+38 checks, all passing against the native Linux adbd; wine is required because
+adbd is a Linux ELF and cannot run on a `windows-latest` runner. Two of them are
+the regression check for `patches/0006`: with `DISPLAY` and `WAYLAND_DISPLAY`
+unset they start the server in the foreground and assert it both prints
+`power notifications disabled` and still answers a client, then start it detached
+the way a user would. A check that only looked for survival would pass on a wine
+whose display-less window creation works, so it asserts the warning too — and
+reports `skip`, not `pass`, when that warning never appears.
+
+It opens with a pre-flight that asserts wine can run the exe and that the
+client can spawn its own server (retried, and on failure it prints wine's
+`+process/+server/+seh` trace and exits). Both are environmental
+preconditions, and every check below greps a captured file — so without that
+gate an environment where the server cannot start reports ten identical
+"cannot connect to daemon" failures that read like product bugs and point
+nowhere. That is not hypothetical: it is what one CI run looked like.
 
 Two habits the suite had to adopt, both recorded at the call site so nobody
 "tidies" them away:

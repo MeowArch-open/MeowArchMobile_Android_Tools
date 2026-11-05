@@ -513,8 +513,21 @@ jobs:
           strip_cr < comp.zsh | grep -q '#compdef madb adb-meowarch'
           strip_cr < comp.fish | grep -q 'complete -c madb'
           # both fish bugs must stay fixed in the generated script: the list
-          # index guard, and the empty-transport guard.
-          strip_cr < comp.fish | grep -q 'test (count $cmd) -gt $i'
+          # index guard (an index past the end is an error in fish 4), and the
+          # empty-transport guard (printf of an empty list emits one blank
+          # token, which turns a device query into `adb '' shell ...`).
+          # NOTE: this asserts the token the generator actually emits. It used
+          # to grep for `count $__madb_target`, an earlier draft's variable
+          # name, which is in no generated script — so the step failed on a
+          # correct one. test-adb-wine.sh's copy was already updated; this one
+          # had not been, and a failing assertion is what CI is for.
+          # -F on both: they contain '$', which is only literal in a BRE by
+          # POSIX convention (an anchor at the end of the pattern, literal
+          # elsewhere). GNU grep honours that; a grep that anchors '$' anywhere
+          # would never match, and the check would then fail on a correct
+          # script. Fixed-string removes the question entirely.
+          strip_cr < comp.fish | grep -qF 'test (count $cmd) -gt $i'
+          strip_cr < comp.fish | grep -qF 'count $out'
           # The argv[0] fallback must be a bare command name: it used to keep
           # the whole Windows path plus ".exe" (splitting on '/' only), which
           # registered a command no shell would ever type, so fish completion
@@ -524,7 +537,6 @@ jobs:
           echo "derived fish name: '$DERIVED'"
           test -n "$DERIVED"
           case "$DERIVED" in */*|*\\*|*.exe|*.EXE) exit 1 ;; esac
-          strip_cr < comp.fish | grep -q 'count $__madb_target'
           ./adb.exe --shell-completion=csh > /dev/null 2>&1 && exit 1 || true
 
           # mDNS is deliberately not built in on any platform
@@ -563,7 +575,15 @@ jobs:
           # surfaces as every check in the suite silently "passing" its grep
           # because the command never ran. Verified against archlinux:base-devel
           # in a container: `pacman -S wine` alone runs adb.exe (PE32 i386).
-          pacman -Syu --noconfirm --needed wine python
+          # libc++/libc++abi are not for wine: they are for the adbd artifact
+          # this job downloads, which links libc++.so.1. Without them adbd exits
+          # with "error while loading shared libraries" and every device-level
+          # check fails with `cannot connect to 127.0.0.1:15599: Connection
+          # refused` — 11 failures that read like a Windows socket bug and are
+          # really a missing runtime for the Linux half of the pair. Reproduced
+          # in archlinux:base-devel: adding the two packages turned those 11
+          # failures into passes with no other change.
+          pacman -Syu --noconfirm --needed wine python libc++ libc++abi
 
       - uses: actions/checkout@v4
 
@@ -583,6 +603,18 @@ jobs:
         run: |
           chmod +x adb-standalone/build-win32/*.exe adbd-bin/adbd
           export WINEDEBUG=-all
+          # wine refuses to start when HOME is a directory it does not own
+          # ("wine: '/github/home' is not owned by you, refusing to create a
+          # configuration directory there") — which is exactly what a container
+          # job's HOME is. Give it a prefix of its own under the workspace, and
+          # hand the same values to the suite step below. Both are load-bearing,
+          # verified in both directions in archlinux:base-devel as root: with
+          # HOME=/github/home owned by the runner's uid the suite's pre-flight
+          # reports "FATAL wine cannot run adb.exe"; with an owned HOME and
+          # prefix all 38 checks pass.
+          export WINEPREFIX="$PWD/.wineprefix"
+          export HOME="$PWD/.winehome"
+          mkdir -p "$WINEPREFIX" "$HOME"
           # Must be the SAME socket spec the suite uses, so the server started
           # here is the one the suite talks to. The suite defaults to 15600 and
           # sets ADB_SERVER_SOCKET itself; this pins both ends explicitly.
@@ -592,8 +624,25 @@ jobs:
           # (~20 s) and the client spawns its own server via CreateProcessW with
           # DETACHED_PROCESS. Both are done here rather than left to land inside
           # the suite's own per-check timeouts — and the spawn is retried, then
-          # asserted, because that is precisely the step that failed on Ubuntu's
-          # wine while every non-server check passed.
+          # asserted, because that is precisely the step that failed here while
+          # every non-server check passed.
+          #
+          # The cause turned out to be in adb, not in the runner:
+          # client/usb_windows.cpp's power-notification thread created a hidden
+          # window and checked it with LOG(FATAL), so the spawned server aborted
+          # on a host with no display before writing its ack, and the client
+          # reported only "could not read ok from ADB Server". patches/0006 makes
+          # that a warning, and the server now starts headless.
+          # (Diagnosis: foreground `wine adb.exe server nodaemon` printed
+          #  `usb_windows.cpp:234 CreateWindowExW failed: Success. (0)`; the same
+          #  binary under Xvfb started normally.)
+          #
+          # No X server is installed here on purpose, and none should be added
+          # later to "fix" a spawn failure. The suite's 0b section unsets DISPLAY
+          # and WAYLAND_DISPLAY and asserts the server warns and keeps serving,
+          # so a headless runner is the configuration under test rather than
+          # something to paper over with Xvfb. Verified: all 38 checks pass in
+          # archlinux:base-devel as root with no display at all.
           wine --version
           wine adb-standalone/build-win32/adb.exe version
           for i in 1 2 3 4 5; do
@@ -619,6 +668,11 @@ jobs:
         working-directory: adb-standalone
         env:
           ADB_WIN_SERVER_PORT: "15600"
+          # Same prefix/HOME as the warm-up step: wine's server lives in the
+          # prefix, so a different one here would mean a fresh prefix rebuild
+          # and no warm server.
+          WINEPREFIX: ${{ github.workspace }}/.wineprefix
+          HOME: ${{ github.workspace }}/.winehome
         run: |
           # The suite takes adbd as its second argument and defaults to
           # ../adbd-standalone/build-native/adbd, which does not exist in CI.

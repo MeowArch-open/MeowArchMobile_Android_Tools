@@ -1,0 +1,104 @@
+From: MeowArchMobile
+Subject: [PATCH] client/usb_windows.cpp: a failed power-notification window must
+ not abort the server
+
+usb_init() starts two detached threads. One polls for USB devices; the other,
+_power_notification_thread(), builds a hidden message-only window so the server
+can react to WM_POWERBROADCAST / PBT_APMRESUMEAUTOMATIC by kicking USB devices
+after a resume. Both RegisterClassExW and CreateWindowExW were checked with
+LOG(FATAL), which aborts the whole daemon.
+
+That makes a cosmetic optimization load-bearing for the server's life. The
+thread's own comment already anticipated the case -- "If adb runs from a
+non-interactive service account, this might not work (not sure)" -- and the
+answer to the unsure was to abort.
+
+CreateWindowExW fails whenever the process has no desktop to create a window
+on, which is normal for a detached adb server: session 0 isolation, a Windows
+service account, a session whose desktop is not yet created, or a machine with
+no interactive session at all. The process then dies before it writes the
+"OK\n" ack that launch_server() waits for, so the client that spawned it
+reports only
+
+    could not read ok from ADB Server
+    * failed to start daemon
+    error: cannot connect to daemon
+
+with no mention of windows, desktops or power notifications, and every
+subsequent adb command fails the same way. Measured under wine 11.21 in a
+container with no display, foreground, which names the actual site:
+
+    00f0:err:winediag:nodrv_CreateWindow Application tried to create a window,
+        but no driver could be loaded.
+    F adb.exe : usb_windows.cpp:234 CreateWindowExW failed: Success. (0)
+
+(GetLastError() is 0 because the failure comes from wine's display-less path,
+not from a Win32 error code being set -- which is exactly why the fatal message
+is useless as a diagnosis.) Under Xvfb the same binary starts normally, which
+pins the cause to the window, not to the sockets.
+
+Downgrade both to LOG(WARNING) and return from the thread. What is lost is the
+resume kick: a device that was mid-handshake when the machine slept may need
+re-plugging. The device_poll_thread() beside it keeps running and keeps finding
+devices, and everything else is unaffected. Killing the server over it is a much
+worse outcome than the degraded case it prevents -- and on a headless host there
+is no interactive session to resume in the first place.
+
+This is the third Windows-only defect the cross build has exposed (after the
+wstat struct mismatch in 0004 and the root-dir walk in 0005), and like the other
+two it is invisible on POSIX, where usb_init() comes from usb_linux.cpp and
+creates no window.
+
+--- a/client/usb_windows.cpp
++++ b/client/usb_windows.cpp
+diff --git a/client/usb_windows.cpp b/client/usb_windows.cpp
+index b17c480..a607e7b 100644
+--- a/client/usb_windows.cpp
++++ b/client/usb_windows.cpp
+@@ -223,16 +223,42 @@ static void _power_notification_thread() {
+     wndclass.lpfnWndProc = _power_window_proc;
+     wndclass.hInstance = instance;
+     wndclass.lpszClassName = kPowerNotificationWindowClassName;
++    // This thread exists only to receive WM_POWERBROADCAST so that USB devices
++    // get kicked after a resume. That is an optimization, not a requirement:
++    // without it, a device that was mid-handshake when the machine slept may
++    // need to be re-plugged, while everything else works normally. So a failure
++    // to build the window is a warning and this thread gives up, rather than a
++    // fatal error that takes the whole server down.
++    //
++    // The upstream LOG(FATAL) is not hypothetical. CreateWindowExW fails
++    // whenever the process has no window station/desktop to create a window on,
++    // which is the case for an adb server running detached from any interactive
++    // session (a Windows service, session 0, a session whose desktop is not
++    // yet created) and for adb.exe under a headless wine. The comment above
++    // this function already anticipated it -- "If adb runs from a
++    // non-interactive service account, this might not work (not sure)" -- and
++    // then made the unsure case abort the daemon: the client that spawned the
++    // server sees only "could not read ok from ADB Server" / "failed to start
++    // daemon", because the process died before writing its ack. Measured under
++    // wine 11.21 in a container with no X display: the foreground server
++    // aborted with exactly
++    //     usb_windows.cpp:234 CreateWindowExW failed: Success. (0)
++    // and every client command failed with cannot connect to daemon; the same
++    // binary under Xvfb started normally. (GetLastError() is 0 because the
++    // failure comes from wine's display-less nodrv_CreateWindow path, not from
++    // a Win32 error being set.)
+     if (!RegisterClassExW(&wndclass)) {
+-        LOG(FATAL) << "RegisterClassExW failed: "
+-                   << android::base::SystemErrorCodeToString(GetLastError());
++        LOG(WARNING) << "RegisterClassExW failed, power notifications disabled: "
++                     << android::base::SystemErrorCodeToString(GetLastError());
++        return;
+     }
+ 
+     if (!CreateWindowExW(WS_EX_NOACTIVATE, kPowerNotificationWindowClassName,
+                          L"ADB Power Notification Window", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr,
+                          instance, nullptr)) {
+-        LOG(FATAL) << "CreateWindowExW failed: "
+-                   << android::base::SystemErrorCodeToString(GetLastError());
++        LOG(WARNING) << "CreateWindowExW failed, power notifications disabled: "
++                     << android::base::SystemErrorCodeToString(GetLastError());
++        return;
+     }
+ 
+     MSG msg;

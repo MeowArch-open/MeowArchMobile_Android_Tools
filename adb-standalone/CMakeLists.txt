@@ -136,12 +136,18 @@ endif()
 #        component, so it is absent from the pinned tree), and declare the
 #        transport entry point the stub provides. Field-for-field identical, so
 #        nothing else has to change.
+#  0004..0006 are Windows-only, and all three are upstream defects the cross
+#        build exposed rather than local workarounds: the wstat struct mismatch,
+#        the non-terminating root-dir walk, and the power-notification window
+#        whose LOG(FATAL) took down a server that had no desktop. Each patch
+#        body carries the measurement.
 foreach(_patch
         0001-fdevent.h-include-vector-explicitly.patch
         0002-adb-host-ux.patch
         0003-adb_listeners.cpp-disable-nagle-on-accepted-sockets.patch
         0004-sysdeps-win32-stat.cpp-mingw-w64-wstat.patch
-        0005-file_sync_client.cpp-root-dir-walk-on-windows.patch)
+        0005-file_sync_client.cpp-root-dir-walk-on-windows.patch
+        0006-client-usb_windows.cpp-power-window-not-fatal.patch)
     execute_process(
         COMMAND patch -N -s --fuzz=0 --no-backup-if-mismatch -r /dev/null -d "${ADB}" -p1 -i
                 "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"

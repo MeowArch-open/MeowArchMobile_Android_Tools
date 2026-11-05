@@ -111,6 +111,86 @@ else
     exit 1
 fi
 
+# Regression for patches/0006. adb's Windows server builds a hidden window for
+# power notifications, and upstream guarded that with LOG(FATAL) — so a server
+# with no desktop died before writing its ack and the client saw only "could not
+# read ok from ADB Server" / "failed to start daemon". A whole-daemon abort
+# caused by an optimization, on hosts where having no desktop is normal
+# (session 0, a service account, any headless CI runner).
+#
+# Recreate the precondition rather than inherit it: DISPLAY and WAYLAND_DISPLAY
+# are unset, so wine has no display to create a window on whichever machine this
+# runs on. Verified to reach the path on a Wayland host and in a container with
+# no X at all; the run prints
+#   err:winediag:nodrv_CreateWindow Application tried to create a window, but no
+#   driver could be loaded.
+# followed by the warning patch 0006 substituted for the abort.
+#
+# Two parts, because they can observe different things. A DETACHED spawn does not
+# show the server's later output: launch_server() returns as soon as it has the
+# ack, and the window failure happens seconds after that, so the warning never
+# reaches the client's capture — a detached-only check cannot tell "warned and
+# carried on" from "window happened to work". Part (a) therefore runs the server
+# in the FOREGROUND, where the warning is visible, and then proves it still
+# answers a client: that is exactly the property 0006 restores. Part (b) covers
+# the detached path a user actually hits.
+echo "== 0b. the server survives having no display =="
+timeout 120 wine "$ADB" kill-server >/dev/null 2>&1
+sleep 1
+
+# (a) foreground: the warning must appear AND the server must still serve.
+FG_SOCK="tcp:localhost:$((SERVER_PORT + 1))"
+( unset DISPLAY WAYLAND_DISPLAY
+  WINEDEBUG=-all ADB_SERVER_SOCKET="$FG_SOCK" \
+      timeout 120 wine "$ADB" server nodaemon > "$TMP/fg-nodisp.txt" 2>&1 ) &
+FG_PID=$!
+# Poll for the warning, and decide on the SERVICE rather than on process
+# liveness. Two reasons: the meaningful property is "does it still answer", and
+# `kill -0` on the backgrounded subshell is not a reliable proxy — measured on
+# this host, it reported the PID gone seconds before wine's own process tree was,
+# while a client connected to the server fine. Every combination is asserted, so
+# a wine whose display-less window creation succeeds cannot make this pass
+# vacuously either.
+WARN_SEEN=0
+for _ in $(seq 1 20); do
+    sleep 1
+    grep -q "power notifications disabled" "$TMP/fg-nodisp.txt" 2>/dev/null \
+        && { WARN_SEEN=1; break; }
+done
+SERVES=0
+( unset DISPLAY WAYLAND_DISPLAY
+  WINEDEBUG=-all ADB_SERVER_SOCKET="$FG_SOCK" timeout 60 wine "$ADB" version \
+      > "$TMP/fg-client.txt" 2>&1 ) \
+    && grep -q "Android Debug Bridge version" "$TMP/fg-client.txt" && SERVES=1
+if [ "$WARN_SEEN" = "1" ] && [ "$SERVES" = "1" ]; then
+    ok "a server with no display warns and keeps serving (0006)"
+elif [ "$WARN_SEEN" = "1" ]; then
+    bad "server warned but did not survive: $(tr '\n' '|' < "$TMP/fg-client.txt" | head -c 160)"
+elif [ "$SERVES" = "1" ]; then
+    # No warning, server fine: this wine built the window despite the unset
+    # display vars, so 0006's path was not reached. Report it as uncovered
+    # rather than claim a pass it did not earn.
+    skip "wine created the power window with no display; 0006's path not reached"
+else
+    bad "foreground server neither warned nor served: \
+$(tail -3 "$TMP/fg-nodisp.txt" | tr '\n' '|')"
+fi
+kill "$FG_PID" 2>/dev/null; wait "$FG_PID" 2>/dev/null
+
+# (b) detached: the path a user hits, and the one that failed in CI.
+if ( unset DISPLAY WAYLAND_DISPLAY
+     WINEDEBUG=-all ADB_SERVER_SOCKET="tcp:localhost:$SERVER_PORT" timeout 120 \
+         wine "$ADB" start-server > "$TMP/headless.txt" 2>&1 ) \
+        && ! grep -qE "failed to start daemon|could not read ok" "$TMP/headless.txt"; then
+    ok "a detached server spawns with no display"
+else
+    bad "detached server failed without a display: $(tr '\n' '|' < "$TMP/headless.txt" | head -c 200)"
+fi
+timeout 120 wine "$ADB" kill-server >/dev/null 2>&1
+sleep 1
+# Restart the ordinary server; every check below expects a warm one.
+wadb start-server > "$TMP/srv2.txt"
+
 echo "== 1. CLI surface =="
 wadb version > "$TMP/version.txt"
 if grep -q "Android Debug Bridge version" "$TMP/version.txt" \
@@ -290,6 +370,22 @@ else
     ADBD_NO_AUTH=1 ADBD_PORT="$PORT" "$ADBD" >"$TMP/adbd.log" 2>&1 &
     ADBD_PID=$!
     sleep 2
+
+    # Assert adbd is actually listening before any check that depends on it. An
+    # adbd that cannot even load — the artifact links libc++.so.1, which a
+    # bare container image does not have — exits immediately, and every check
+    # below then fails with "cannot connect to 127.0.0.1:$PORT: Connection
+    # refused". Eleven identical failures that read like a bug in the win32
+    # socket layer and are really a missing runtime for the LINUX half of the
+    # pair. One CI run looked exactly like that; adbd's own message names it.
+    if ! grep -q "listening on" "$TMP/adbd.log"; then
+        echo "  FATAL the native adbd did not start — nothing below can pass:"
+        head -4 "$TMP/adbd.log"
+        echo "  (a 'libc++.so.1: cannot open shared object file' line means this"
+        echo "   image needs the libc++/libc++abi packages, not a product fix)"
+        echo "== summary: $PASS passed, $((FAIL+1)) failed, $SKIP skipped =="
+        exit 1
+    fi
 
     wadb connect "127.0.0.1:$PORT" > "$TMP/connect.txt"
     if grep -q connected "$TMP/connect.txt"; then
