@@ -140,15 +140,18 @@ sleep 1
 
 # (a) foreground: the warning must appear AND the server must still serve.
 FG_SOCK="tcp:localhost:$((SERVER_PORT + 1))"
-( unset DISPLAY WAYLAND_DISPLAY
-  WINEDEBUG=-all ADB_SERVER_SOCKET="$FG_SOCK" \
-      timeout 120 wine "$ADB" server nodaemon > "$TMP/fg-nodisp.txt" 2>&1 ) &
+# `env -u` rather than `( unset ... ) &`: FG_PID has to be the `timeout`
+# process itself so that the kill below reaches wine. A subshell's PID is not
+# wine's, so killing the subshell can leave the server holding the test port
+# until its own timeout expires.
+env -u DISPLAY -u WAYLAND_DISPLAY WINEDEBUG=-all ADB_SERVER_SOCKET="$FG_SOCK" \
+    timeout 120 wine "$ADB" server nodaemon > "$TMP/fg-nodisp.txt" 2>&1 &
 FG_PID=$!
 # Poll for the warning, and decide on the SERVICE rather than on process
 # liveness. Two reasons: the meaningful property is "does it still answer", and
-# `kill -0` on the backgrounded subshell is not a reliable proxy — measured on
-# this host, it reported the PID gone seconds before wine's own process tree was,
-# while a client connected to the server fine. Every combination is asserted, so
+# `kill -0` on the spawned PID is not a reliable proxy — measured on this host it
+# reported the PID gone seconds before wine's own process tree was, while a
+# client connected to that server fine. Every combination is asserted below, so
 # a wine whose display-less window creation succeeds cannot make this pass
 # vacuously either.
 WARN_SEEN=0
@@ -158,10 +161,10 @@ for _ in $(seq 1 20); do
         && { WARN_SEEN=1; break; }
 done
 SERVES=0
-( unset DISPLAY WAYLAND_DISPLAY
-  WINEDEBUG=-all ADB_SERVER_SOCKET="$FG_SOCK" timeout 60 wine "$ADB" version \
-      > "$TMP/fg-client.txt" 2>&1 ) \
-    && grep -q "Android Debug Bridge version" "$TMP/fg-client.txt" && SERVES=1
+if env -u DISPLAY -u WAYLAND_DISPLAY WINEDEBUG=-all ADB_SERVER_SOCKET="$FG_SOCK" \
+        timeout 60 wine "$ADB" version > "$TMP/fg-client.txt" 2>&1; then
+    grep -q "Android Debug Bridge version" "$TMP/fg-client.txt" && SERVES=1
+fi
 if [ "$WARN_SEEN" = "1" ] && [ "$SERVES" = "1" ]; then
     ok "a server with no display warns and keeps serving (0006)"
 elif [ "$WARN_SEEN" = "1" ]; then
@@ -178,9 +181,9 @@ fi
 kill "$FG_PID" 2>/dev/null; wait "$FG_PID" 2>/dev/null
 
 # (b) detached: the path a user hits, and the one that failed in CI.
-if ( unset DISPLAY WAYLAND_DISPLAY
-     WINEDEBUG=-all ADB_SERVER_SOCKET="tcp:localhost:$SERVER_PORT" timeout 120 \
-         wine "$ADB" start-server > "$TMP/headless.txt" 2>&1 ) \
+if env -u DISPLAY -u WAYLAND_DISPLAY WINEDEBUG=-all \
+        ADB_SERVER_SOCKET="tcp:localhost:$SERVER_PORT" \
+        timeout 120 wine "$ADB" start-server > "$TMP/headless.txt" 2>&1 \
         && ! grep -qE "failed to start daemon|could not read ok" "$TMP/headless.txt"; then
     ok "a detached server spawns with no display"
 else

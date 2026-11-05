@@ -335,13 +335,17 @@ the way a user would. A check that only looked for survival would pass on a wine
 whose display-less window creation works, so it asserts the warning too — and
 reports `skip`, not `pass`, when that warning never appears.
 
-It opens with a pre-flight that asserts wine can run the exe and that the
-client can spawn its own server (retried, and on failure it prints wine's
-`+process/+server/+seh` trace and exits). Both are environmental
-preconditions, and every check below greps a captured file — so without that
-gate an environment where the server cannot start reports ten identical
-"cannot connect to daemon" failures that read like product bugs and point
-nowhere. That is not hypothetical: it is what one CI run looked like.
+It opens with pre-flights that assert the three environmental preconditions —
+wine can run the exe, the client can spawn its own server (retried, and on
+failure it prints wine's `+process/+server/+seh` trace), and the native adbd it
+is about to talk to actually started (`grep listening on` its log). Every check
+below greps a captured file, so without those gates an environment where the
+server cannot start reports ten identical "cannot connect to daemon" failures,
+and an adbd that cannot even load reports eleven "Connection refused" ones —
+all of which read like product bugs and point nowhere. Neither is hypothetical:
+they are what two CI runs looked like. The adbd gate names the usual cause in
+its own output (`libc++.so.1: cannot open shared object file` means the image
+needs the libc++/libc++abi packages, not a product fix).
 
 Two habits the suite had to adopt, both recorded at the call site so nobody
 "tidies" them away:
