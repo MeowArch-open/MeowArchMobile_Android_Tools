@@ -53,7 +53,7 @@ jobs:
           # applies with fuzz in one place and silently never applies at all in
           # another, which is how the USB-FFS guard stayed in the tree.
           # Every build now runs patch --fuzz=0; this step proves that is safe
-          # for all nine patches across the three projects before CI builds.
+          # for all fifteen patches across the three projects before CI builds.
           python3 scripts/check-patches.py
 
       - name: Configure & build (native)
@@ -409,6 +409,16 @@ jobs:
           # -municode. Without it the CRT would look for main(int, char**) and
           # the link would have failed; assert the symbol is really there.
           i686-w64-mingw32-nm build-win32/adb.exe | grep -q 'wmain'
+          # patches/0006 is compiled in. This repo has a history of patches that
+          # fail silently (a hunk that only matches with fuzz, and one whose line
+          # counts did not match its body, so it applied nowhere), and 0006's
+          # effect is invisible on a runner that HAS a desktop: the window
+          # succeeds and the LOG(FATAL) that used to be there never fires. So
+          # assert the replacement text is in the binary. Two hits, one per
+          # branch of the thread (RegisterClassExW and CreateWindowExW).
+          i686-w64-mingw32-strings build-win32/adb.exe \
+            | grep -c 'power notifications disabled' | tee /tmp/p0006.txt
+          [ "$(cat /tmp/p0006.txt)" -eq 2 ]
 
       - name: Stage dist (exe + Google's DLLs, platform-tools layout)
         working-directory: adb-standalone
