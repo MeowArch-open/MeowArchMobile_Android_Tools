@@ -75,6 +75,42 @@ wadb() {
 # fails — the check then reports FAIL for a passing build. Everything below
 # captures to a file first.
 
+# Pre-flight, before any check can produce a misleading result.
+#
+# Every check below greps a captured file. If wine cannot run the exe at all, or
+# the client cannot spawn its own server, those greps fail in ways that read like
+# product bugs ("FAIL mdns check", "FAIL connect", ...) — ten identical failures
+# pointing nowhere. One CI run did exactly that. So the two environmental
+# preconditions are asserted here, once, with wine's own diagnostics, and the
+# suite exits rather than reporting noise.
+echo "== 0. pre-flight =="
+wadb version > "$TMP/preflight.txt"
+if grep -q "Android Debug Bridge version" "$TMP/preflight.txt"; then
+    ok "wine runs adb.exe"
+else
+    echo "  FATAL wine cannot run $ADB:"; cat "$TMP/preflight.txt" | head -8
+    echo "== summary: 0 passed, 1 failed, 0 skipped =="
+    exit 1
+fi
+# The server is spawned with CreateProcessW + DETACHED_PROCESS and inherited pipe
+# handles (adb.cpp's launch_server), which is the part that differs most between
+# wine builds. Retry a few times: the first spawn also has to build the prefix.
+SRV_OK=0
+for i in 1 2 3 4 5; do
+    wadb start-server > "$TMP/srv.txt"
+    if ! grep -q "failed to start daemon" "$TMP/srv.txt"; then SRV_OK=1; break; fi
+    sleep 3
+done
+if [ "$SRV_OK" = "1" ]; then
+    ok "the client can spawn its own server (attempt $i)"
+else
+    echo "  FATAL adb.exe cannot spawn its server under this wine build:"
+    cat "$TMP/srv.txt" | head -8
+    WINEDEBUG=+process,+server,+seh timeout 120 wine "$ADB" start-server 2>&1 | tail -25
+    echo "== summary: 0 passed, 1 failed, 0 skipped =="
+    exit 1
+fi
+
 echo "== 1. CLI surface =="
 wadb version > "$TMP/version.txt"
 if grep -q "Android Debug Bridge version" "$TMP/version.txt" \

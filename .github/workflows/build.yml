@@ -500,16 +500,30 @@ jobs:
           ./test_suggest.exe > suggest.txt 2>&1
           strip_cr < suggest.txt | grep -q '0 failed'
 
-          # completion generation works on Windows (same generator)
+          # completion generation works on Windows (same generator).
+          # bash and zsh hardcode both shipped command names, but fish derives
+          # its name from the optional NAME argument and falls back to argv[0] —
+          # which here is "adb.exe" and used to make `complete -c madb` fail.
+          # Pass the NAME explicitly, as the wine suite does, and check the
+          # derived fallback separately below.
           ./adb.exe --shell-completion=bash > comp.bash 2>/dev/null
           ./adb.exe --shell-completion=zsh > comp.zsh 2>/dev/null
-          ./adb.exe --shell-completion=fish > comp.fish 2>/dev/null
+          ./adb.exe --shell-completion=fish madb > comp.fish 2>/dev/null
           strip_cr < comp.bash | grep -q 'complete -F _madb madb adb-meowarch'
           strip_cr < comp.zsh | grep -q '#compdef madb adb-meowarch'
           strip_cr < comp.fish | grep -q 'complete -c madb'
           # both fish bugs must stay fixed in the generated script: the list
           # index guard, and the empty-transport guard.
           strip_cr < comp.fish | grep -q 'test (count $cmd) -gt $i'
+          # The argv[0] fallback must be a bare command name: it used to keep
+          # the whole Windows path plus ".exe" (splitting on '/' only), which
+          # registered a command no shell would ever type, so fish completion
+          # silently did nothing while this explicit-NAME case still passed.
+          ./adb.exe --shell-completion=fish > comp-fish-bare 2>/dev/null
+          DERIVED="$(strip_cr < comp-fish-bare | sed -n 's/^complete -c \([^ ]*\).*/\1/p' | head -1)"
+          echo "derived fish name: '$DERIVED'"
+          test -n "$DERIVED"
+          case "$DERIVED" in */*|*\\*|*.exe|*.EXE) exit 1 ;; esac
           strip_cr < comp.fish | grep -q 'count $__madb_target'
           ./adb.exe --shell-completion=csh > /dev/null 2>&1 && exit 1 || true
 
@@ -521,18 +535,36 @@ jobs:
     # The device-level Windows path, which a windows-latest runner cannot cover:
     # adbd is a Linux ELF, so it cannot run there. This job drives the
     # cross-compiled adb.exe under wine against the NATIVE adbd that build-native
-    # produces, on Linux, over TCP. That is the only way to prove a real sync
-    # push/pull round trip comes back byte-identical through ws2_32,
-    # sysdeps_win32's FD indirection and adb_writev over WSABUF, and that all
-    # four compression codecs survive the cross build.
+    # produces, over TCP. That is the only way to prove a real sync push/pull
+    # round trip comes back byte-identical through ws2_32, sysdeps_win32's FD
+    # indirection and adb_writev over WSABUF, and that all four compression
+    # codecs survive the cross build.
     #
-    # better_fastboot has no equivalent job because it needs no Linux-side peer;
-    # adb does, and its wine suite is the e2e half of the Windows story.
+    # The archlinux container is deliberate, not decoration. The suite needs the
+    # client to SPAWN its own server, which on Windows means CreateProcessW with
+    # DETACHED_PROCESS and inherited pipe handles; Ubuntu's wine package failed
+    # at exactly that ("* failed to start daemon", every device-level check
+    # failing) while the same binary spawns a server fine under Arch's wine,
+    # which is also the environment this suite was developed and verified in.
+    # Same image as every other Linux job here, so adbd's glibc matches too.
     name: adb.exe e2e (wine vs native adbd)
     needs: [build-adb-windows, build-native]
     runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
     timeout-minutes: 60
     steps:
+      - name: Install wine
+        run: |
+          # Arch's `wine` is one package that runs both 64-bit and (via WoW64,
+          # since wine 9) 32-bit PE files, so there is no wine32/wine64 split
+          # like Debian/Ubuntu has — asking for those two fails the install with
+          # "target not found" and leaves wine absent entirely, which then
+          # surfaces as every check in the suite silently "passing" its grep
+          # because the command never ran. Verified against archlinux:base-devel
+          # in a container: `pacman -S wine` alone runs adb.exe (PE32 i386).
+          pacman -Syu --noconfirm --needed wine python
+
       - uses: actions/checkout@v4
 
       - name: Download adb.exe + test binaries
@@ -547,31 +579,47 @@ jobs:
           name: adbd-x86_64
           path: adbd-bin
 
-      - name: Ensure wine (with 32-bit support) is available
+      - name: Warm wine and prove the server can be spawned
         run: |
-          # adb.exe is a PE32 i386 binary, so wine32 is required — wine64 alone
-          # reports "cannot run 32-bit applications". Probe first: the runner
-          # image usually already has wine, and `apt-get update` after
-          # --add-architecture can fail on a missing i386 mirror.
-          if ! dpkg --print-foreign-architectures | grep -qx i386; then
-            sudo dpkg --add-architecture i386
-            sudo apt-get update
-          fi
-          # --no-install-recommends: wine otherwise drags in a desktop stack the
-          # headless runner has no display server for.
-          sudo apt-get install -y --no-install-recommends wine wine32 wine64 ||
-            sudo apt-get install -y --no-install-recommends wine
+          chmod +x adb-standalone/build-win32/*.exe adbd-bin/adbd
+          export WINEDEBUG=-all
+          # Must be the SAME socket spec the suite uses, so the server started
+          # here is the one the suite talks to. The suite defaults to 15600 and
+          # sets ADB_SERVER_SOCKET itself; this pins both ends explicitly.
+          export ADB_WIN_SERVER_PORT=15600
+          export ADB_SERVER_SOCKET="tcp:localhost:$ADB_WIN_SERVER_PORT"
+          # Two slow things happen on the first run: wine builds its prefix
+          # (~20 s) and the client spawns its own server via CreateProcessW with
+          # DETACHED_PROCESS. Both are done here rather than left to land inside
+          # the suite's own per-check timeouts — and the spawn is retried, then
+          # asserted, because that is precisely the step that failed on Ubuntu's
+          # wine while every non-server check passed.
           wine --version
-          # One real invocation before the suite runs: the first wine start
-          # builds its prefix, which takes far longer than any single check and
-          # would otherwise land inside the suite's own timeouts.
-          chmod +x adb-standalone/build-win32/adb.exe
-          WINEDEBUG=-all wine adb-standalone/build-win32/adb.exe version | head -2
+          wine adb-standalone/build-win32/adb.exe version
+          for i in 1 2 3 4 5; do
+            wine adb-standalone/build-win32/adb.exe start-server > /tmp/srv.txt 2>&1
+            if ! grep -q 'failed to start daemon' /tmp/srv.txt; then
+              echo "server spawned on attempt $i"; cat /tmp/srv.txt; break
+            fi
+            echo "server spawn attempt $i failed; retrying"; cat /tmp/srv.txt
+            sleep 3
+          done
+          # Fail HERE, with wine's own diagnostics, instead of letting the suite
+          # report ten identical "cannot connect to daemon" checks.
+          wine adb-standalone/build-win32/adb.exe start-server > /tmp/srv2.txt 2>&1
+          if grep -q 'failed to start daemon' /tmp/srv2.txt; then
+            echo "adb.exe cannot spawn its server under this wine build:"
+            cat /tmp/srv2.txt
+            WINEDEBUG=+process,+server,+seh wine adb-standalone/build-win32/adb.exe \
+              start-server 2>&1 | tail -40
+            exit 1
+          fi
 
       - name: Run the wine suite
         working-directory: adb-standalone
+        env:
+          ADB_WIN_SERVER_PORT: "15600"
         run: |
-          chmod +x build-win32/test_suggest.exe ../adbd-bin/adbd
           # The suite takes adbd as its second argument and defaults to
           # ../adbd-standalone/build-native/adbd, which does not exist in CI.
           bash scripts/test-adb-wine.sh "$PWD/build-win32" "$PWD/../adbd-bin/adbd" 2>&1 \

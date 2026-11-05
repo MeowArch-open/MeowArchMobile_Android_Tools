@@ -17,7 +17,10 @@
 
 pkgname=adb-meowarch
 pkgver=36.0.0
-pkgrel=4
+# Bumped from 4: 001b6a5 shipped pkgrel=4, and dcb2742 changed the binary
+# afterwards (adb_completion.cpp's FishBaseName, adbglue.cpp's .exe strip). Same
+# pkgrel with different bytes means anyone who installed 4 never gets an upgrade.
+pkgrel=5
 pkgdesc="AOSP host adb client (platform-tools adb), built standalone against Arch's libusb"
 arch=('x86_64')
 url="https://android.googlesource.com/platform/packages/modules/adb/"

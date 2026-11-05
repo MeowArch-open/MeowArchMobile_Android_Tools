@@ -303,7 +303,7 @@ It starts `adbd-standalone`'s daemon on a private port, then drives the client
 against it in an isolated `$HOME`: connect, `devices`, shell with exit-status
 propagation, byte-exact push/pull round trip (256 KiB of random data), recursive
 directory push, forward allocation, and `server-status` (which goes through
-protobuf TextFormat). 109 checks, plus 119 layout checks in
+protobuf TextFormat). 110 checks, plus 119 layout checks in
 `scripts/test-progress-layout.py` and 33 in `test_suggest`.
 
 `test-adb-wine.sh` replays the platform-independent half of that against
@@ -312,6 +312,22 @@ binary against the **native Linux adbd** over TCP, so a real sync push/pull
 round trip has to come back byte-identical through `ws2_32`, `sysdeps_win32`'s
 FD indirection and `adb_writev` over WSABUF. It also checks each compression
 algorithm (`-z lz4|zstd|brotli|none`) survives the cross-compiled codecs.
+34 checks, all of which pass against the native Linux adbd; wine is required
+because adbd is a Linux ELF and cannot run on a `windows-latest` runner.
+
+Two habits the suite had to adopt, both recorded at the call site so nobody
+"tidies" them away:
+
+* a wine invocation is **never** piped into a filter. The call that spawns the
+  adb server hands that server the same stdout/stderr, so the server inherits
+  the pipe's write end and `grep` never sees EOF — the suite hangs at the
+  timeout even though adb finished. Redirect to a file, then filter the file.
+* `wadb()` records the exit status in `$WINE_RC` rather than leaving it in `$?`,
+  because the trailing `grep` would otherwise overwrite it and every
+  `wadb ... && bad` or `RC=$?` check would pass vacuously.
+
+`-z` is a **sync** argument, not a global option: it has to follow `push`/`pull`,
+or adb's global parser reports "unknown command -z".
 
 ## License
 
