@@ -355,8 +355,15 @@ jobs:
     steps:
       - name: Install build deps
         run: |
+          # libc++/libc++abi are for the HOST protoc this job downloads from
+          # build-adb, not for anything it compiles: protoc is a Linux binary
+          # built with -stdlib=libc++ and links libc++.so.1 dynamically. Without
+          # them the codegen step dies with
+          #   protoc: error while loading shared libraries: libc++.so.1
+          # (exit 127) — which is what one run of this job hit.
           pacman -Syu --noconfirm --needed \
             git cmake ninja make pkgconf fakeroot curl python \
+            libc++ libc++abi gcc-libs \
             mingw-w64-gcc mingw-w64-crt mingw-w64-headers mingw-w64-winpthreads
 
       - uses: actions/checkout@v4
@@ -376,6 +383,10 @@ jobs:
         run: |
           set -x   # never fail silently: every check below prints its input
           chmod +x ../host-tools/protoc
+          # Run it once now. If its shared libraries are missing the failure is
+          # otherwise reported by ninja as a bare "exit 127" on a generated
+          # source, three hundred compile lines away from the cause.
+          ../host-tools/protoc --version
           cmake -B build-win32 -G Ninja -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake \
                 -DHOST_PROTOC="$PWD/../host-tools/protoc"
