@@ -46,7 +46,30 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-option(ADB_USE_LIBCXX "link against libc++ (required by adb's standard-layout asserts)" ON)
+# The Linux build compiles with clang and links libc++. libc++ is required
+# there for protobuf, whose headers pull <atomic> through a libc++-only path
+# (the failure surfaces as "'atomic' file not found" — see the CI job's
+# comment), not for adb itself.
+#
+# mingw-w64 ships no libc++, so the Windows build uses libstdc++. That is
+# checked rather than assumed: adb's types.h static_asserts standard-layout at
+# line 123 (inside Block::operator==) and line 258 (inside coalesce<>()), and
+# both were compiled here against the real header with g++ and with
+# clang+libstdc++ (both pass; the asserts are about char* and std::vector<char>,
+# neither of which is library-dependent). They only fire when those bodies are
+# instantiated, so including the header alone proves nothing — a future
+# libstdc++ that regressed the layout would show up here, not silently.
+set(_is_windows_cross FALSE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(_is_windows_cross TRUE)
+endif()
+# (a plain set, not option(): a generator expression is not evaluated here, and
+# a cache ON would silently force -stdlib=libc++ onto the mingw build.)
+if(_is_windows_cross)
+    set(ADB_USE_LIBCXX OFF CACHE BOOL "link against libc++" FORCE)
+else()
+    set(ADB_USE_LIBCXX ON CACHE BOOL "link against libc++ (required by adb's standard-layout asserts)")
+endif()
 if(ADB_USE_LIBCXX)
     add_compile_options(-stdlib=libc++)
     add_link_options(-stdlib=libc++)
@@ -72,6 +95,40 @@ if(NOT EXISTS "${ADB}/Android.bp")
 endif()
 message(STATUS "AOSP tree: ${AOSP_ROOT}")
 
+# ---------------------------------------------------- windows cross build
+# cmake/win32.cmake reproduces soong's official Windows host adb build (mingw
+# i686 + usb_windows.cpp + Google's prebuilt AdbWinApi). Sets WIN32_BUILD and
+# the platform flags; every target below branches on it.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    include(cmake/win32.cmake)
+endif()
+
+# GCC-family compilers (mingw included) cannot parse libbase's clang-only
+# thread-safety annotations or clang's _Nonnull keywords, so a shim supplies
+# both. Two mechanisms, deliberately scoped differently:
+#
+#   * include_directories(BEFORE gnu_compat) is GLOBAL. It shadows
+#     <android-base/thread_annotations.h> with the GCC-neutral one, and that is
+#     header-lookup only — harmless to any target that never includes it.
+#     (`static void f(int) EXCLUDES(m)` is a hard GCC error, and adb writes that
+#     in adb_listeners.cpp, transport.cpp and fdevent.h.)
+#
+#   * the force-include of compat.h is PER-TARGET via adb_apply_gnu_compat().
+#     It must NOT be a global add_compile_options: it would also be injected
+#     into the third-party add_subdirectory(protobuf) tree below, whose sources
+#     are not on the <cstdint> path compat.h assumes, and the configure would
+#     fail. Every target that compiles AOSP C++ calls the macro instead.
+function(adb_apply_gnu_compat target)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        target_compile_options(${target} PRIVATE
+            -include "${CMAKE_CURRENT_SOURCE_DIR}/shim/gnu_compat/compat.h")
+    endif()
+endfunction()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+    include_directories(BEFORE "${CMAKE_CURRENT_SOURCE_DIR}/shim/gnu_compat")
+endif()
+
 # --------------------------------------------------------------- patches
 # Idempotent: rc=1 means "already applied" (patch -N skips it), which is fine.
 #  0001  adb_mdns.h: declare mdns::ServiceInfo locally instead of pulling in
@@ -82,7 +139,9 @@ message(STATUS "AOSP tree: ${AOSP_ROOT}")
 foreach(_patch
         0001-fdevent.h-include-vector-explicitly.patch
         0002-adb-host-ux.patch
-        0003-adb_listeners.cpp-disable-nagle-on-accepted-sockets.patch)
+        0003-adb_listeners.cpp-disable-nagle-on-accepted-sockets.patch
+        0004-sysdeps-win32-stat.cpp-mingw-w64-wstat.patch
+        0005-file_sync_client.cpp-root-dir-walk-on-windows.patch)
     execute_process(
         COMMAND patch -N -s --fuzz=0 --no-backup-if-mismatch -r /dev/null -d "${ADB}" -p1 -i
                 "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}"
@@ -94,11 +153,17 @@ endforeach()
 
 # --------------------------------------------------------------- shims
 add_library(meowarch_shim STATIC
-    shim/processgroup_shim.cpp
+    # processgroup is a daemon-only dependency (jdwp_service.cpp), and its shim
+    # header types its API in terms of uid_t, which mingw has no notion of.
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:shim/processgroup_shim.cpp>
     shim/build_version.cpp
     shim/mdns/mdns_stub.cpp
     shim/fastdeploy/fastdeploy_stub.cpp
-    shim/usb_host_stub.cpp
+    # Windows gets the real usb_cleanup() from client/usb_windows.cpp; a second
+    # definition would be a duplicate symbol at link time. (On Linux it comes
+    # from usb_linux.cpp, whose object nothing references for that symbol, so
+    # the stub wins.)
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:shim/usb_host_stub.cpp>
 )
 target_include_directories(meowarch_shim PUBLIC
     shim/include
@@ -112,6 +177,7 @@ target_link_libraries(meowarch_shim PUBLIC adb_protos base_static)
 # adb_mdns.h only declares the host-side API (MdnsInfo, the connect helpers,
 # what main.cpp and socket_spec.cpp call) under #if ADB_HOST.
 target_compile_definitions(meowarch_shim PUBLIC ADB_HOST=1 _GNU_SOURCE)
+adb_apply_gnu_compat(meowarch_shim)
 
 # --------------------------------------------------------- MeowArchMobile UX
 # Colors, the push/pull progress bar, the message catalog and the categorised
@@ -135,6 +201,7 @@ target_link_libraries(adb_glue PUBLIC base_static)
 target_compile_options(adb_glue PRIVATE -Wall -Wextra -Wformat=2)
 target_compile_options(adb_glue PRIVATE
     $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:GNU>>:-Werror=format -Wno-format-nonliteral>)
+adb_apply_gnu_compat(adb_glue)
 
 # ------------------------------------------------- test-only binaries
 # Drives the progress bar directly so scripts/test-progress-layout.py can check
@@ -163,22 +230,123 @@ file(READ "${BSSL}/CMakeLists.txt" BSSL_CML)
 string(REPLACE "set(CMAKE_CXX_STANDARD 14)" "set(CMAKE_CXX_STANDARD 17)" BSSL_CML "${BSSL_CML}")
 file(WRITE "${BSSL_STAGE}/CMakeLists.txt" "${BSSL_CML}")
 
+# ASM off everywhere: boringssl's vendored CMakeLists mixes each architecture's
+# assembly into one list, which a cross build cannot select from (and on Windows
+# it would need NASM, which soong only invokes for the x86_64 variant). The
+# C fallbacks are what the aarch64 cross build already uses.
 set(OPENSSL_NO_ASM ON CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 add_subdirectory(${BSSL_STAGE} ${CMAKE_BINARY_DIR}/boringssl EXCLUDE_FROM_ALL)
 
 # ---------------------------------------------------------- system deps
+# Every target below links ${ZLIB_TARGET} / ${LZ4_TARGET} / ${ZSTD_TARGET} /
+# ${BROTLI_TARGET} / ${LIBUSB_TARGET} rather than a library name, so the two
+# branches below can differ in where those come from without touching anything
+# else.
 find_package(Threads REQUIRED)
-find_package(ZLIB REQUIRED)
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(LZ4 IMPORTED_TARGET liblz4)
-    pkg_check_modules(ZSTD IMPORTED_TARGET libzstd)
-    pkg_check_modules(BROTLI IMPORTED_TARGET libbrotlienc libbrotlidec)
-    pkg_check_modules(LIBUSB IMPORTED_TARGET libusb-1.0)
-endif()
-if(NOT LZ4_FOUND OR NOT ZSTD_FOUND OR NOT BROTLI_FOUND OR NOT LIBUSB_FOUND)
-    message(FATAL_ERROR "system lz4/zstd/brotli/libusb-1.0 not found via pkg-config")
+
+if(WIN32_BUILD)
+    # Arch ships no mingw cross packages for zlib/lz4/zstd/brotli/libusb, so
+    # there is nothing for pkg-config to find. All five are compiled from AOSP's
+    # own external/ checkouts instead — the same copies soong builds into the
+    # official Windows adb, so a device sees identical compression and framing.
+    set(ZLIB_DIR   "${AOSP_ROOT}/external/zlib")
+    set(LZ4_DIR    "${AOSP_ROOT}/external/lz4/lib")
+    set(ZSTD_DIR   "${AOSP_ROOT}/external/zstd/lib")
+    set(BROTLI_DIR "${AOSP_ROOT}/external/brotli/c")
+    set(LIBUSB_DIR "${AOSP_ROOT}/external/libusb")
+
+    foreach(d ZLIB_DIR LZ4_DIR ZSTD_DIR BROTLI_DIR LIBUSB_DIR)
+        if(NOT EXISTS "${${d}}")
+            message(FATAL_ERROR "Windows build needs ${${d}} — run scripts/fetch-aosp.sh")
+        endif()
+    endforeach()
+
+    # zlib: soong's libz_defaults set, minus the SIMD files (they need
+    # per-variant intrinsics flags; the scalar paths are the portable fallback).
+    add_library(zlib_static STATIC
+        ${ZLIB_DIR}/adler32.c  ${ZLIB_DIR}/compress.c   ${ZLIB_DIR}/crc32.c
+        ${ZLIB_DIR}/deflate.c  ${ZLIB_DIR}/gzclose.c    ${ZLIB_DIR}/gzlib.c
+        ${ZLIB_DIR}/gzread.c   ${ZLIB_DIR}/gzwrite.c    ${ZLIB_DIR}/infback.c
+        ${ZLIB_DIR}/inffast.c  ${ZLIB_DIR}/inflate.c    ${ZLIB_DIR}/inftrees.c
+        ${ZLIB_DIR}/trees.c    ${ZLIB_DIR}/uncompr.c    ${ZLIB_DIR}/zutil.c
+    )
+    target_include_directories(zlib_static PUBLIC ${ZLIB_DIR})
+    target_compile_definitions(zlib_static PRIVATE HAVE_HIDDEN ZLIB_CONST _LARGEFILE64_SOURCE)
+    set(ZLIB_TARGET zlib_static)
+
+    # lz4: external/lz4/lib/Android.bp's four sources. lz4file.c is the CLI
+    # helper adb does not use.
+    add_library(lz4_static STATIC
+        ${LZ4_DIR}/lz4.c ${LZ4_DIR}/lz4hc.c ${LZ4_DIR}/lz4frame.c ${LZ4_DIR}/xxhash.c
+    )
+    target_include_directories(lz4_static PUBLIC ${LZ4_DIR})
+    set(LZ4_TARGET lz4_static)
+
+    # zstd: soong's libzstd is "lib/*/*.c" — common, compress and decompress.
+    # deprecated/ and legacy/ are not in that glob, and dictBuilder is only
+    # needed by the CLI.
+    file(GLOB _zstd_common  "${ZSTD_DIR}/common/*.c")
+    file(GLOB _zstd_comp    "${ZSTD_DIR}/compress/*.c")
+    file(GLOB _zstd_decomp  "${ZSTD_DIR}/decompress/*.c")
+    add_library(zstd_static STATIC ${_zstd_common} ${_zstd_comp} ${_zstd_decomp})
+    target_include_directories(zstd_static PUBLIC ${ZSTD_DIR} ${ZSTD_DIR}/common)
+    # ZSTD_MULTITHREAD: file_sync_client.cpp can run compression off-thread;
+    # without it the threaded API silently degrades to serial.
+    target_compile_definitions(zstd_static PUBLIC ZSTD_MULTITHREAD)
+    set(ZSTD_TARGET zstd_static)
+
+    # brotli: external/brotli/Android.bp's c/{common,dec,enc}/*.c.
+    file(GLOB _brotli_common "${BROTLI_DIR}/common/*.c")
+    file(GLOB _brotli_dec    "${BROTLI_DIR}/dec/*.c")
+    file(GLOB _brotli_enc    "${BROTLI_DIR}/enc/*.c")
+    add_library(brotli_static STATIC ${_brotli_common} ${_brotli_dec} ${_brotli_enc})
+    target_include_directories(brotli_static PUBLIC ${BROTLI_DIR}/include)
+    set(BROTLI_TARGET brotli_static)
+
+    # libusb: soong's windows srcs (the winusb backend plus the portable core),
+    # with its windows/config.h as local_include_dirs does. Compiled here so
+    # ADB_LIBUSB=1 works on Windows exactly as it does on Linux; the default
+    # backend there stays AdbWinApi (is_libusb_enabled() returns false unless
+    # the env var says otherwise).
+    add_library(libusb_static STATIC
+        ${LIBUSB_DIR}/libusb/core.c
+        ${LIBUSB_DIR}/libusb/descriptor.c
+        ${LIBUSB_DIR}/libusb/hotplug.c
+        ${LIBUSB_DIR}/libusb/io.c
+        ${LIBUSB_DIR}/libusb/sync.c
+        ${LIBUSB_DIR}/libusb/strerror.c
+        ${LIBUSB_DIR}/libusb/os/events_windows.c
+        ${LIBUSB_DIR}/libusb/os/threads_windows.c
+        ${LIBUSB_DIR}/libusb/os/windows_common.c
+        ${LIBUSB_DIR}/libusb/os/windows_usbdk.c
+        ${LIBUSB_DIR}/libusb/os/windows_winusb.c
+    )
+    target_include_directories(libusb_static PUBLIC
+        ${LIBUSB_DIR}/include        # <libusb/libusb.h>, the path adb includes
+        ${LIBUSB_DIR}/libusb
+        ${LIBUSB_DIR}/libusb/os
+        ${LIBUSB_DIR}/windows        # config.h
+    )
+    target_compile_definitions(libusb_static PRIVATE ENABLE_LOGGING=1)
+    set(LIBUSB_TARGET libusb_static)
+else()
+    find_package(ZLIB REQUIRED)
+    set(ZLIB_TARGET ZLIB::ZLIB)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LZ4 IMPORTED_TARGET liblz4)
+        pkg_check_modules(ZSTD IMPORTED_TARGET libzstd)
+        pkg_check_modules(BROTLI IMPORTED_TARGET libbrotlienc libbrotlidec)
+        pkg_check_modules(LIBUSB IMPORTED_TARGET libusb-1.0)
+    endif()
+    if(NOT LZ4_FOUND OR NOT ZSTD_FOUND OR NOT BROTLI_FOUND OR NOT LIBUSB_FOUND)
+        message(FATAL_ERROR "system lz4/zstd/brotli/libusb-1.0 not found via pkg-config")
+    endif()
+    set(LZ4_TARGET PkgConfig::LZ4)
+    set(ZSTD_TARGET PkgConfig::ZSTD)
+    set(BROTLI_TARGET PkgConfig::BROTLI)
+    set(LIBUSB_TARGET PkgConfig::LIBUSB)
 endif()
 
 # -------------------------------------------------- protobuf (from AOSP)
@@ -287,7 +455,8 @@ add_library(log_static STATIC
     ${LIBLOG}/logger_write.cpp
     ${LIBLOG}/logprint.cpp
     ${LIBLOG}/properties.cpp
-    ${LIBLOG}/event_tag_map.cpp
+    # needs sys/mman.h; soong leaves it out of the windows variant too
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${LIBLOG}/event_tag_map.cpp>
 )
 target_include_directories(log_static PUBLIC
     ${LIBLOG}/include
@@ -304,12 +473,21 @@ target_compile_definitions(log_static PRIVATE
     ANDROID_DEBUGGABLE=0
     _GNU_SOURCE
 )
+if(WIN32_BUILD)
+    # logger.h uses atomic_int, which under mingw GCC comes from the shim in
+    # shim/gnu_compat/stdatomic.h (the same one better_fastboot's win32 build
+    # uses); liblog's sources include it as <stdatomic.h>.
+    target_include_directories(log_static BEFORE PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/shim/gnu_compat")
+endif()
+adb_apply_gnu_compat(log_static)
 
 # -------------------------------------------------------------- libbase
 add_library(base_static STATIC
     ${LIBBASE}/abi_compatibility.cpp
     ${LIBBASE}/chrono_utils.cpp
-    ${LIBBASE}/cmsg.cpp
+    # cmsg.cpp is SCM_RIGHTS over a Unix socketpair: no Windows equivalent,
+    # and soong excludes it from the windows variant.
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${LIBBASE}/cmsg.cpp>
     ${LIBBASE}/file.cpp
     ${LIBBASE}/hex.cpp
     ${LIBBASE}/logging.cpp
@@ -323,22 +501,42 @@ add_library(base_static STATIC
     ${LIBBASE}/stringprintf.cpp
     ${LIBBASE}/strings.cpp
     ${LIBBASE}/threads.cpp
-    ${LIBBASE}/errors_unix.cpp
+    # soong's libbase windows srcs: errors_windows.cpp replaces errors_unix.cpp
+    # and utf8.cpp is added (the wide-string helpers file.cpp and adb's
+    # GetExecutablePath use, which need UNICODE).
+    $<IF:$<BOOL:${WIN32_BUILD}>,${LIBBASE}/errors_windows.cpp,${LIBBASE}/errors_unix.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${LIBBASE}/utf8.cpp>
 )
 target_include_directories(base_static PUBLIC
     ${LIBBASE}/include
     ${AOSP_ROOT}/external/fmtlib/include
 )
+if(WIN32_BUILD)
+    # libbase/file.cpp passes a narrow char* to GetModuleFileName; UNICODE=1
+    # would map that to the wide version and reject it. So the UNICODE defines
+    # adb_defaults asks for are applied to adb's own targets only, not here.
+    target_compile_definitions(base_static PRIVATE
+        $<$<BOOL:${WIN32_BUILD}>:_POSIX _POSIX_SOURCE _POSIX_THREAD_SAFE_FUNCTIONS>)
+endif()
 target_link_libraries(base_static PUBLIC log_static Threads::Threads)
+adb_apply_gnu_compat(base_static)
 
 # -------------------------------------------------------- libcutils bits
 add_library(cutils_sockets STATIC
+    # sockets.cpp is platform-neutral; the rest come in _unix/_windows pairs,
+    # and soong's windows block swaps them wholesale. socket_local_* has no
+    # Windows counterpart at all (AF_UNIX streaming sockets are how the client
+    # reaches a local server; on Windows that is a TCP loopback instead), so
+    # they are simply not compiled there.
     ${SYSCORE}/libcutils/sockets.cpp
-    ${SYSCORE}/libcutils/socket_inaddr_any_server_unix.cpp
-    ${SYSCORE}/libcutils/socket_local_client_unix.cpp
-    ${SYSCORE}/libcutils/socket_local_server_unix.cpp
-    ${SYSCORE}/libcutils/socket_network_client_unix.cpp
-    ${SYSCORE}/libcutils/sockets_unix.cpp
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${SYSCORE}/libcutils/socket_inaddr_any_server_unix.cpp>
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${SYSCORE}/libcutils/socket_local_client_unix.cpp>
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${SYSCORE}/libcutils/socket_local_server_unix.cpp>
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${SYSCORE}/libcutils/socket_network_client_unix.cpp>
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${SYSCORE}/libcutils/sockets_unix.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${SYSCORE}/libcutils/sockets_windows.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${SYSCORE}/libcutils/socket_inaddr_any_server_windows.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${SYSCORE}/libcutils/socket_network_client_windows.cpp>
 )
 target_include_directories(cutils_sockets PUBLIC
     ${SYSCORE}/libcutils/include
@@ -346,17 +544,31 @@ target_include_directories(cutils_sockets PUBLIC
 )
 target_link_libraries(cutils_sockets PUBLIC log_static)
 target_compile_definitions(cutils_sockets PRIVATE _GNU_SOURCE)
+if(WIN32_BUILD)
+    target_link_libraries(cutils_sockets PUBLIC ws2_32)
+    target_compile_definitions(cutils_sockets PRIVATE _POSIX _POSIX_SOURCE)
+endif()
+adb_apply_gnu_compat(cutils_sockets)
 
-add_library(cutils_fsconfig STATIC
-    ${SYSCORE}/libcutils/fs_config.cpp
-)
-target_include_directories(cutils_fsconfig PUBLIC
-    ${SYSCORE}/libcutils/include
-    ${SYSCORE}/libcutils/include/private
-    ${LIBBASE}/include
-)
-target_link_libraries(cutils_fsconfig PUBLIC log_static base_static)
-target_compile_definitions(cutils_fsconfig PRIVATE _GNU_SOURCE)
+# fs_config resolves Android build-system uids/gids from <linux/capability.h>,
+# which mingw has. Its only consumer in this project is the DAEMON
+# (daemon/jdwp_service.cpp via libadbd_fs), and the host client never calls it —
+# verified with nm: no fs_config symbol is undefined in the Linux adb binary
+# either. So it is a Linux-only library here, kept because adbd-standalone
+# shares this tree's expectations.
+if(NOT WIN32_BUILD)
+    add_library(cutils_fsconfig STATIC
+        ${SYSCORE}/libcutils/fs_config.cpp
+    )
+    target_include_directories(cutils_fsconfig PUBLIC
+        ${SYSCORE}/libcutils/include
+        ${SYSCORE}/libcutils/include/private
+        ${LIBBASE}/include
+    )
+    target_link_libraries(cutils_fsconfig PUBLIC log_static base_static)
+    target_compile_definitions(cutils_fsconfig PRIVATE _GNU_SOURCE)
+adb_apply_gnu_compat(cutils_fsconfig)
+endif()
 
 # ------------------------------------------------------ libcrypto_utils
 add_library(crypto_utils STATIC ${SYSCORE}/libcrypto_utils/android_pubkey.cpp)
@@ -384,7 +596,8 @@ target_include_directories(ziparchive_static PUBLIC
     ${LIBZIP}/incfs_support/include
     ${AOSP_ROOT}/external/googletest/googletest/include
 )
-target_link_libraries(ziparchive_static PUBLIC base_static log_static ZLIB::ZLIB)
+target_link_libraries(ziparchive_static PUBLIC base_static log_static ${ZLIB_TARGET})
+adb_apply_gnu_compat(ziparchive_static)
 target_compile_definitions(ziparchive_static PUBLIC
     INCFS_SUPPORT_DISABLED=1
     ZLIB_CONST
@@ -392,17 +605,35 @@ target_compile_definitions(ziparchive_static PUBLIC
 )
 
 # ------------------------------------------------------------ libadb_sysdeps
+# soong's libadb_posix_srcs vs libadb_windows_srcs: the whole sysdeps layer
+# swaps. On Windows, sysdeps_win32.cpp also provides wmain() (see the binary
+# below) and sysdeps/win32/{errno,stat}.cpp supply the pieces its headers use;
+# fdevent_poll.cpp replaces fdevent_epoll.cpp, which is why it is listed with
+# adb_core rather than here (adb_core owns the fdevent sources).
 add_library(adb_sysdeps STATIC
-    ${ADB}/sysdeps_unix.cpp
-    ${ADB}/sysdeps/posix/network.cpp
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${ADB}/sysdeps_unix.cpp>
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:${ADB}/sysdeps/posix/network.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${ADB}/sysdeps_win32.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${ADB}/sysdeps/win32/errno.cpp>
+    $<$<BOOL:${WIN32_BUILD}>:${ADB}/sysdeps/win32/stat.cpp>
 )
 target_include_directories(adb_sysdeps PUBLIC ${ADB})
 target_link_libraries(adb_sysdeps PUBLIC base_static log_static)
 target_compile_definitions(adb_sysdeps PUBLIC
     ADB_HOST=1
     _GNU_SOURCE
-    IOV_MAX=__IOV_MAX
+    # IOV_MAX is POSIX (glibc's __IOV_MAX); mingw has no <sys/uio.h> limit, and
+    # sysdeps/uio.h takes a different path under _WIN32 (adb_writev over WSABUF),
+    # so the define is unnecessary there.
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:IOV_MAX=__IOV_MAX>
 )
+if(WIN32_BUILD)
+    target_compile_definitions(adb_sysdeps PUBLIC
+        _POSIX _POSIX_SOURCE _POSIX_THREAD_SAFE_FUNCTIONS
+        UNICODE=1 _UNICODE=1 NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601)
+    target_link_libraries(adb_sysdeps PUBLIC ws2_32 gdi32 userenv iphlpapi)
+endif()
+adb_apply_gnu_compat(adb_sysdeps)
 
 # ------------------------------------------------------------ adb core
 # Common include dirs for everything adb: the adb root, its sysdeps/, proto
@@ -426,7 +657,10 @@ add_library(adb_core STATIC
     ${ADB}/adb_utils.cpp
     ${ADB}/apacket_reader.cpp
     ${ADB}/fdevent/fdevent.cpp
-    ${ADB}/fdevent/fdevent_epoll.cpp
+    # soong's libadb_linux_srcs vs libadb_windows_srcs: epoll on Linux, poll
+    # everywhere else (Windows has no epoll, and its WSAPoll needs the poll
+    # backend's own bookkeeping anyway).
+    $<IF:$<BOOL:${WIN32_BUILD}>,${ADB}/fdevent/fdevent_poll.cpp,${ADB}/fdevent/fdevent_epoll.cpp>
     ${ADB}/services.cpp
     ${ADB}/sockets.cpp
     ${ADB}/socket_spec.cpp
@@ -444,7 +678,11 @@ add_library(adb_core STATIC
     ${ADB}/pairing_auth/aes_128_gcm.cpp
     ${ADB}/pairing_auth/pairing_auth.cpp
     ${ADB}/pairing_connection/pairing_connection.cpp
-    # host-only client pieces that belong to the core (adb.cpp calls into them)
+    # host-only client pieces that belong to the core (adb.cpp calls into them).
+    # The libusb TUs are unconditional in soong's libadb_host too — they define
+    # libusb::usb_init(), a different symbol from the global usb_init() that the
+    # per-OS backend provides, so both are linked and ADB_LIBUSB picks between
+    # them at run time.
     ${ADB}/client/auth.cpp
     ${ADB}/client/adb_wifi.cpp
     ${ADB}/client/detach.cpp
@@ -453,20 +691,33 @@ add_library(adb_core STATIC
     ${ADB}/client/usb_libusb_hotplug.cpp
     ${ADB}/client/usb_libusb_inhouse_hotplug.cpp
     ${ADB}/client/transport_usb.cpp
-    ${ADB}/client/usb_linux.cpp
     ${ADB}/client/transport_emulator.cpp
     ${ADB}/client/pairing/pairing_client.cpp
+    # The per-OS backend, which supplies the global usb_init()/usb_cleanup():
+    # soong's libadb_host linux block adds usb_linux.cpp, its windows block adds
+    # usb_windows.cpp (AdbWinApi backend).
+    $<IF:$<BOOL:${WIN32_BUILD}>,${ADB}/client/usb_windows.cpp,${ADB}/client/usb_linux.cpp>
 )
 target_include_directories(adb_core PUBLIC ${ADB_COMMON_INCS})
 target_include_directories(adb_core SYSTEM PUBLIC
     shim/include
     ${AOSP_ROOT}/external/libusb   # <libusb/libusb.h> — adb includes it by that path
 )
+if(WIN32_BUILD)
+    # adb_api.h for usb_windows.cpp: the sparse development checkout if
+    # fetch-aosp.sh added it, otherwise the vendored copy in win-prebuilt/usb.
+    if(EXISTS "${AOSP_ROOT}/development/host/windows/usb/api/adb_api.h")
+        target_include_directories(adb_core SYSTEM PUBLIC
+            "${AOSP_ROOT}/development/host/windows/usb/api")
+    else()
+        target_include_directories(adb_core SYSTEM PUBLIC "${WINPREBUILT}")
+    endif()
+endif()
 target_compile_definitions(adb_core PUBLIC
     ADB_HOST=1
     ANDROID_BASE_UNIQUE_FD_DISABLE_IMPLICIT_CONVERSION=1
     _GNU_SOURCE
-    IOV_MAX=__IOV_MAX
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:IOV_MAX=__IOV_MAX>
 )
 target_link_libraries(adb_core PUBLIC
     adb_glue
@@ -475,21 +726,33 @@ target_link_libraries(adb_core PUBLIC
     base_static
     log_static
     cutils_sockets
-    cutils_fsconfig
+    $<$<NOT:$<BOOL:${WIN32_BUILD}>>:cutils_fsconfig>
     ziparchive_static
     crypto_utils
     crypto
     ssl
     diagnose_usb
-    PkgConfig::LZ4
-    PkgConfig::ZSTD
-    PkgConfig::BROTLI
-    PkgConfig::LIBUSB
+    ${LZ4_TARGET}
+    ${ZSTD_TARGET}
+    ${BROTLI_TARGET}
+    ${LIBUSB_TARGET}
     Threads::Threads
     ${CMAKE_DL_LIBS}
 )
-# b64_pton — glibc libresolv; forkpty — libutil
-target_link_libraries(adb_core PUBLIC resolv util)
+if(WIN32_BUILD)
+    # Google's prebuilt AdbWinApi: usb_windows.cpp loads it at run time for the
+    # non-libusb backend, exactly like the official Windows platform-tools
+    # dist. Imported through its .a import lib; the DLLs are copied next to the
+    # exe by the post-build step on the adb target below.
+    target_link_libraries(adb_core PUBLIC "${WINPREBUILT}/AdbWinApi.a")
+else()
+    # b64_pton — glibc libresolv; forkpty — libutil. Neither is used by the
+    # client (b64_pton is daemon/auth.cpp, forkpty is not called at all), but
+    # they are on the Linux link line so an unrelated future reference links.
+    # mingw has no libresolv/libutil: the symbols come from msvcrt and ws2_32,
+    # which are already linked.
+    target_link_libraries(adb_core PUBLIC resolv util)
+endif()
 
 # ------------------------------------------------------------ adb binary
 add_executable(adb
@@ -516,7 +779,26 @@ target_link_libraries(adb PRIVATE
     ssl
     Threads::Threads
 )
+if(WIN32_BUILD)
+    # sysdeps_win32.cpp defines wmain(), which converts argv from UTF-16 to
+    # UTF-8 before calling our main(). -municode selects that entry point;
+    # without it the CRT looks for main(int, char**) and the link fails. This is
+    # soong's own windows ldflag for both the adb binary and its tests.
+    target_link_options(adb PRIVATE -municode)
+    # adb_defaults' windows host_ldlibs, plus ws2_32 for the socket layer.
+    target_link_libraries(adb PRIVATE ws2_32 gdi32 userenv iphlpapi)
+    # Google's two DLLs travel with the exe, the same layout as the official
+    # platform-tools zip: AdbWinApi.dll is loaded at run time by usb_windows.cpp
+    # and AdbWinUsbApi.dll by it in turn.
+    add_custom_command(TARGET adb POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${WINPREBUILT}/AdbWinApi.dll" "${WINPREBUILT}/AdbWinUsbApi.dll"
+                "$<TARGET_FILE_DIR:adb>"
+        COMMENT "Copying AdbWinApi.dll / AdbWinUsbApi.dll next to adb.exe")
+endif()
 target_compile_options(adb_core PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 target_compile_options(adb      PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+adb_apply_gnu_compat(adb_core)
+adb_apply_gnu_compat(adb)
 
 install(TARGETS adb RUNTIME DESTINATION bin)

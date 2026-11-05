@@ -26,3 +26,8 @@ __pycache__/
 *.pyc
 adb-standalone/build-*/
 adb-standalone/pkg/
+adb-standalone/dist-win32/
+# NOTE: adb-standalone/win-prebuilt/ IS tracked, same convention as
+# better_fastboot/win-prebuilt/: Google's prebuilt AdbWinApi.dll/.a + adb_api.h,
+# vendored so the Windows cross build works from a plain checkout without
+# needing the sparse development/ fetch.

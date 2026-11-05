@@ -322,6 +322,251 @@ jobs:
           path: adb-standalone/adb-meowarch-*.pkg.tar.zst
           if-no-files-found: error
 
+      # The Linux job builds protoc, which the win32 cross build needs (a cross
+      # build cannot run a target-architecture protoc), so it is uploaded here
+      # rather than rebuilt by the Windows job.
+      - name: Upload host protoc for the win32 cross build
+        uses: actions/upload-artifact@v4
+        with:
+          name: adb-host-protoc
+          path: adb-standalone/build-native/protobuf/protoc
+          if-no-files-found: error
+          retention-days: 1
+
+  build-adb-windows:
+    # Windows adb.exe, built the way Google builds it: soong's Windows host
+    # toolchain is mingw-w64 GCC i686 (cc/config/x86_windows_host.go sets
+    # -DUSE_MINGW; development/host/windows pins AdbWinApi to compile_multilib
+    # "32"), linked against Google's prebuilt AdbWinApi.dll with the genuine
+    # client/usb_windows.cpp backend. MSVC is not an option — the upstream
+    # sources are POSIX-flavored and Google compiles them with mingw.
+    #
+    # Unlike the Linux build this one uses libstdc++ (mingw ships no libc++)
+    # and compiles zlib/lz4/zstd/brotli/libusb from AOSP's external/ instead of
+    # pkg-config, because Arch has no mingw cross packages for any of them.
+    # adb_defaults' UNICODE/_UNICODE are applied to adb's targets only:
+    # libbase/file.cpp passes a narrow char* to GetModuleFileName.
+    name: adb.exe win32 (mingw cross)
+    needs: build-adb
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    timeout-minutes: 90
+    steps:
+      - name: Install build deps
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git cmake ninja make pkgconf fakeroot curl python \
+            mingw-w64-gcc mingw-w64-crt mingw-w64-headers mingw-w64-winpthreads
+
+      - uses: actions/checkout@v4
+
+      - name: Download host protoc
+        uses: actions/download-artifact@v4
+        with:
+          name: adb-host-protoc
+          path: host-tools
+
+      - name: Fetch AOSP sources (pinned; adds brotli + sparse development)
+        working-directory: adb-standalone
+        run: ./scripts/fetch-aosp.sh
+
+      - name: Configure & build (mingw-w64 i686 cross)
+        working-directory: adb-standalone
+        run: |
+          set -x   # never fail silently: every check below prints its input
+          chmod +x ../host-tools/protoc
+          cmake -B build-win32 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake \
+                -DHOST_PROTOC="$PWD/../host-tools/protoc"
+          cmake --build build-win32 -j"$(nproc)"
+          cmake --build build-win32 --target test_suggest -j"$(nproc)"
+          # 32-bit PE. `file` spells the machine differently across versions
+          # ("Intel i386" on Arch, "Intel 80386" elsewhere) — accept both.
+          file build-win32/adb.exe | tee /tmp/f.txt
+          grep -qiE 'PE32.*(i386|80386|x86)' /tmp/f.txt
+          # Self-contained: static libstdc++/libgcc/winpthread. The only DLL
+          # imports must be Windows system DLLs + Google's AdbWinApi.dll —
+          # which also proves usb_windows.cpp is the backend that got linked.
+          i686-w64-mingw32-objdump -p build-win32/adb.exe \
+            | grep 'DLL Name' | tee /tmp/dlls.txt
+          grep -q 'AdbWinApi.dll' /tmp/dlls.txt
+          if grep -qiE 'libstdc|libgcc|libwinpthread' /tmp/dlls.txt; then
+            echo "static runtimes leaked into imports"; exit 1
+          fi
+          # The Windows entry point is sysdeps_win32.cpp's wmain(), selected by
+          # -municode. Without it the CRT would look for main(int, char**) and
+          # the link would have failed; assert the symbol is really there.
+          i686-w64-mingw32-nm build-win32/adb.exe | grep -q 'wmain'
+
+      - name: Stage dist (exe + Google's DLLs, platform-tools layout)
+        working-directory: adb-standalone
+        run: |
+          mkdir -p dist-win32
+          cp build-win32/adb.exe build-win32/test_suggest.exe \
+             build-win32/AdbWinApi.dll build-win32/AdbWinUsbApi.dll dist-win32/
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: adb-meowarch-win32
+          path: adb-standalone/dist-win32/*
+          if-no-files-found: error
+
+  test-adb-windows:
+    # Runs the cross-compiled adb.exe NATIVELY (no wine) on a windows-latest
+    # runner: a real Windows host runs the PE directly, so this exercises the
+    # genuine console/UTF-16 argv path rather than an emulation of it.
+    name: adb.exe smoke (windows native)
+    needs: build-adb-windows
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: adb-meowarch-win32
+          path: dist
+
+      # adbd is a Linux ELF, so it cannot run on this runner: what this job
+      # proves is everything ABOVE the socket layer (entry point, UTF-16 argv,
+      # console detection, i18n, help, suggestions, completion generation).
+      # The device-level path — a real sync push/pull round trip through ws2_32,
+      # sysdeps_win32's FD indirection and adb_writev over WSABUF — is covered
+      # by scripts/test-adb-wine.sh, which drives adb.exe under wine against the
+      # native Linux adbd.
+      - name: Smoke test
+        shell: bash
+        working-directory: dist
+        run: |
+          # NOTE: never pipe a producer straight into `grep -q` here. Under
+          # `-o pipefail` (Git-bash's default on this runner) grep exits at the
+          # first match, the writer takes EPIPE, and the *pipeline* fails — the
+          # step then dies with no output at all. Capture to a file first.
+          set -euo pipefail
+          set -x   # name the failing check in the log
+          strip_cr() { tr -d '\r'; }
+
+          ./adb.exe version > version.txt 2>&1
+          strip_cr < version.txt | grep -q 'Android Debug Bridge version'
+          strip_cr < version.txt | grep -q 'meowarch-adb'
+          # GetExecutablePath on Windows goes through libbase's utf8.cpp +
+          # GetModuleFileName, which is exactly why base_static is compiled
+          # WITHOUT UNICODE. If this line disappears, that scoping broke.
+          strip_cr < version.txt | grep -q 'Installed as'
+
+          # help: every documented command still listed, sections addressable.
+          ./adb.exe --lang=en help > help.txt 2>&1
+          for c in devices connect push pull install shell reboot sideload \
+                   bugreport keygen wait-for mdns; do
+            strip_cr < help.txt | grep -qE "(^| )$c([ \\[]|$)"
+          done
+          ./adb.exe help --list-sections > sections.txt 2>&1
+          strip_cr < sections.txt | grep -q 'networking'
+          strip_cr < sections.txt | grep -q 'meowarch'
+
+          # Did-you-want, in English and localized (these exit 1 by design).
+          ./adb.exe --lang=en sheel > sheel.txt 2>&1 || true
+          strip_cr < sheel.txt | grep -q "Did you want 'shell'?"
+          # the help pointer must drop the .exe suffix
+          strip_cr < sheel.txt | grep -q "Run 'adb help' for usage"
+          ./adb.exe --lang=en --one-devic > opt.txt 2>&1 || true
+          strip_cr < opt.txt | grep -q "Did you want '--one-device'?"
+          # a foreign word gets NO hint (a wrong guess trains the user to
+          # ignore the line): exactly one line, upstream's error.
+          ./adb.exe --lang=en xyzzy > xyzzy.txt 2>&1 || true
+          test "$(strip_cr < xyzzy.txt | grep -c '')" -eq 1
+          ./adb.exe --lang=zh_CN sheel > sheel_zh.txt 2>&1 || true
+          strip_cr < sheel_zh.txt | grep -q '您是否想输入'
+          ./adb.exe --lang=ja --list-langs > langs.txt 2>&1
+          strip_cr < langs.txt | grep -q '日本語'
+
+          # our five flags survive argv compaction on Windows too
+          ./adb.exe --list-langs version > /dev/null
+          ./adb.exe --no-color version > /dev/null
+          ./adb.exe --no-progress version > /dev/null
+
+          # the suggestion scorer, as a native PE
+          ./test_suggest.exe > suggest.txt 2>&1
+          strip_cr < suggest.txt | grep -q '0 failed'
+
+          # completion generation works on Windows (same generator)
+          ./adb.exe --shell-completion=bash > comp.bash 2>/dev/null
+          ./adb.exe --shell-completion=zsh > comp.zsh 2>/dev/null
+          ./adb.exe --shell-completion=fish > comp.fish 2>/dev/null
+          strip_cr < comp.bash | grep -q 'complete -F _madb madb adb-meowarch'
+          strip_cr < comp.zsh | grep -q '#compdef madb adb-meowarch'
+          strip_cr < comp.fish | grep -q 'complete -c madb'
+          # both fish bugs must stay fixed in the generated script: the list
+          # index guard, and the empty-transport guard.
+          strip_cr < comp.fish | grep -q 'test (count $cmd) -gt $i'
+          strip_cr < comp.fish | grep -q 'count $__madb_target'
+          ./adb.exe --shell-completion=csh > /dev/null 2>&1 && exit 1 || true
+
+          # mDNS is deliberately not built in on any platform
+          ./adb.exe mdns check > mdns.txt 2>&1 || true
+          strip_cr < mdns.txt | grep -qi 'unavailable'
+
+  test-adb-windows-wine:
+    # The device-level Windows path, which a windows-latest runner cannot cover:
+    # adbd is a Linux ELF, so it cannot run there. This job drives the
+    # cross-compiled adb.exe under wine against the NATIVE adbd that build-native
+    # produces, on Linux, over TCP. That is the only way to prove a real sync
+    # push/pull round trip comes back byte-identical through ws2_32,
+    # sysdeps_win32's FD indirection and adb_writev over WSABUF, and that all
+    # four compression codecs survive the cross build.
+    #
+    # better_fastboot has no equivalent job because it needs no Linux-side peer;
+    # adb does, and its wine suite is the e2e half of the Windows story.
+    name: adb.exe e2e (wine vs native adbd)
+    needs: [build-adb-windows, build-native]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download adb.exe + test binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: adb-meowarch-win32
+          path: adb-standalone/build-win32
+
+      - name: Download native adbd
+        uses: actions/download-artifact@v4
+        with:
+          name: adbd-x86_64
+          path: adbd-bin
+
+      - name: Ensure wine (with 32-bit support) is available
+        run: |
+          # adb.exe is a PE32 i386 binary, so wine32 is required — wine64 alone
+          # reports "cannot run 32-bit applications". Probe first: the runner
+          # image usually already has wine, and `apt-get update` after
+          # --add-architecture can fail on a missing i386 mirror.
+          if ! dpkg --print-foreign-architectures | grep -qx i386; then
+            sudo dpkg --add-architecture i386
+            sudo apt-get update
+          fi
+          # --no-install-recommends: wine otherwise drags in a desktop stack the
+          # headless runner has no display server for.
+          sudo apt-get install -y --no-install-recommends wine wine32 wine64 ||
+            sudo apt-get install -y --no-install-recommends wine
+          wine --version
+          # One real invocation before the suite runs: the first wine start
+          # builds its prefix, which takes far longer than any single check and
+          # would otherwise land inside the suite's own timeouts.
+          chmod +x adb-standalone/build-win32/adb.exe
+          WINEDEBUG=-all wine adb-standalone/build-win32/adb.exe version | head -2
+
+      - name: Run the wine suite
+        working-directory: adb-standalone
+        run: |
+          chmod +x build-win32/test_suggest.exe ../adbd-bin/adbd
+          # The suite takes adbd as its second argument and defaults to
+          # ../adbd-standalone/build-native/adbd, which does not exist in CI.
+          bash scripts/test-adb-wine.sh "$PWD/build-win32" "$PWD/../adbd-bin/adbd" 2>&1 \
+            | tee wine.txt
+          grep -qE '^== summary: [0-9]+ passed, 0 failed' wine.txt
+
   build-fastboot:
     # Standalone build of AOSP's official host fastboot tool (the real
     # usb_linux backend + Android-forked mke2fs/make_f2fs), native x86_64.

@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,17 @@ std::string Basename(const std::string& path) {
                  : (bslash == std::string::npos) ? slash
                                                  : std::max(slash, bslash);
     return (cut == std::string::npos) ? path : path.substr(cut + 1);
+}
+
+// Drop a trailing ".exe" so the Windows hint reads "Run 'adb help'", not
+// "Run 'adb.exe help'" — the user typed neither spelling's extension.
+std::string StripExe(std::string name) {
+    if (name.size() > 4) {
+        std::string tail = name.substr(name.size() - 4);
+        for (auto& c : tail) c = (char)tolower((unsigned char)c);
+        if (tail == ".exe") name.erase(name.size() - 4);
+    }
+    return name;
 }
 
 std::string QuoteList(const std::vector<std::string>& cands) {
@@ -94,7 +106,7 @@ void MaybeHintUnknownCommand(const std::string& message) {
 }
 
 int EarlyInit(int argc, char** argv) {
-    if (argc > 0 && argv[0] && argv[0][0]) g_program_name = Basename(argv[0]);
+    if (argc > 0 && argv[0] && argv[0][0]) g_program_name = StripExe(Basename(argv[0]));
     // Scan for our own flags before anything else runs: getopt in adb's main()
     // rejects unknown options, and help/errors printed later must already know
     // the locale and color state.

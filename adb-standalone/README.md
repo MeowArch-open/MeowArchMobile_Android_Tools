@@ -7,6 +7,9 @@ from `packages/modules/adb` in place, no soong, no Android userland. Not to be
 confused with [`adbd-standalone`](../adbd-standalone/), which is the daemon that
 runs *on* a device.
 
+A Windows `adb.exe` cross-builds from the same sources (see
+[Build → Windows](#windows-cross-compiled-like-googles)).
+
 Talks to real phones over USB (libusb, plus the native usbfs backend the client
 falls back to) and over TCP (`adb connect host:port`), with the genuine
 shell/sync/forward/pairing protocol and its compression (brotli/lz4/zstd).
@@ -104,6 +107,8 @@ one.
       adb_i18n.{h,cpp} + _en/_zh_cn/_zh_tw/_ja.cpp
                                     message catalog, four languages
       adb_help.{h,cpp}              categorised + colored help renderer
+      adb_completion.{h,cpp}        bash/zsh/fish completion generator
+      adb_suggest.{h,cpp}           "Did you want X?" scorer (shared vocabulary)
       adbglue.{h,cpp}               the API the patch calls
     shim/
       include/build/version.h        vendored libbuildversion header
@@ -112,10 +117,20 @@ one.
       mdns/mdns_stub.cpp             mDNS API stubs (discovery off, honestly)
       fastdeploy/fastdeploy_stub.cpp Quick Deploy stubs (falls back to a normal
                                      install; see README "What is not built")
-      usb_host_stub.cpp              host usb_cleanup()
+      usb_host_stub.cpp              host usb_cleanup() (Linux only)
+      gnu_compat/              GCC shims, used by the mingw cross build:
+        compat.h               __builtin_available, _Nonnull, <cstdint>
+        stdatomic.h            C11 atomic names in C++ (liblog's logger.h)
+        android-base/thread_annotations.h
+                               clang-only lock annotations, neutralized
     cmake/protobuf-compat/     minimal config.h for AOSP protobuf 21.12
+    cmake/mingw-i686.cmake     Windows cross toolchain (mingw-w64 i686, as soong)
+    cmake/win32.cmake          Windows-specific source/flags selection
+    win-prebuilt/usb/          Google's prebuilt AdbWinApi (what soong links
+                               into the official Windows adb.exe)
     scripts/fetch-aosp.sh      fetches the partial AOSP checkout (pinned SHAs)
     scripts/test-adb.sh        end-to-end suite against adbd-standalone over TCP
+    scripts/test-adb-wine.sh   the same suite against adb.exe, under wine
     PKGBUILD                   Arch package `adb-meowarch`
 
 ## Upstream
@@ -134,7 +149,12 @@ shared with the other two projects). Pinned revisions:
 | external/protobuf                | `c8206780937dba60e53ce2fef7cc57c50439c30b` | BSD-3      |
 | external/fmtlib                  | `97ceae9d27415d6444f3e24f491da8ed6902ecfa` | MIT        |
 | external/googletest (header)     | `cbeab5d01811d23ea488efc07f2c31f7c53024e2` | BSD-3      |
-| external/libusb (headers only)   | `7b5267099855d320f6013d667d113e3619f18bf5` | LGPL-2.1   |
+| external/libusb                  | `7b5267099855d320f6013d667d113e3619f18bf5` | LGPL-2.1   |
+| external/zlib                    | `f29fc757b1f27c182f36790eb0ccc6cf8ec27e8e` | zlib       |
+| external/lz4                     | `f2a717445d3a8a1aaa5aeef1cb2e9a4bc739e9b1` | BSD-2      |
+| external/zstd                    | `415469b3387190483d00ed838165d022d86cb899` | BSD-3      |
+| external/brotli                  | `e6b1ca20ff13da592055bbbc4f907c68ae8931d2` | MIT        |
+| development (sparse, Windows)    | `88f7870b2c652922dc2afb01c076737e8bc50130` | Apache-2.0 |
 
 System libraries: `zlib`, `liblz4`, `libzstd`, `libbrotli`, `libusb-1.0`
 (1.0.30 on Arch; adb needs ≥ 1.0.29 for the superspeed-plus descriptor call),
@@ -142,6 +162,11 @@ System libraries: `zlib`, `liblz4`, `libzstd`, `libbrotli`, `libusb-1.0`
 taken from the distro — distro protobuf is a libstdc++ build and its symbols do
 not match this libc++ binary, and adb pins a protobuf whose generated code must
 match its runtime exactly.
+
+On Windows all five system libraries come from the tree instead (`external/zlib`,
+`external/lz4`, `external/zstd`, `external/brotli`, `external/libusb`), because
+Arch ships no mingw cross packages for any of them. They are fetched
+unconditionally so one checkout serves both builds and the two cannot drift.
 
 ## Build
 
@@ -153,6 +178,77 @@ match its runtime exactly.
     makepkg -f                                     # package
 
 The build takes a few minutes the first time (boringssl + protobuf).
+
+### Windows (cross-compiled, like Google's)
+
+Google builds the official Windows `adb.exe` with **mingw-w64 GCC, i686**
+(soong `x86_windows_host.go`: `-DUSE_MINGW`; `AdbWinApi` pins
+`compile_multilib "32"`), not MSVC — the sources are POSIX-flavored. We
+reproduce that, so the .exe talks to a device through Google's own prebuilt
+`AdbWinApi.dll` and `client/usb_windows.cpp`:
+
+    # the cross build needs a HOST protoc: build the native tree first
+    cmake -B build-win32 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake \
+          -DHOST_PROTOC="$PWD/build-native/protobuf/protoc"
+    cmake --build build-win32 -j$(nproc)
+    # → build-win32/adb.exe (static libstdc++/libgcc/winpthread, PE32 i386)
+    #   + AdbWinApi.dll / AdbWinUsbApi.dll copied next to it — ship all three,
+    #     the same layout as Google's platform-tools zip
+
+Same upstream sources and same UX features (colours, the fixed-width progress
+bar, Did-you-want, completion generation, all four languages). Differences, all
+mirroring soong's `windows:` blocks:
+
+* `sysdeps_win32.cpp` + `sysdeps/win32/{errno,stat}.cpp` replace
+  `sysdeps_unix.cpp` + `sysdeps/posix/network.cpp`; `fdevent_poll.cpp` replaces
+  `fdevent_epoll.cpp`; `client/usb_windows.cpp` replaces `client/usb_linux.cpp`.
+  `client/usb_libusb*.cpp` stay — they are unconditional upstream too, and
+  `ADB_LIBUSB=1` selects them at run time (the default on Windows is
+  AdbWinApi, since `is_libusb_enabled()` returns false there).
+* libbase swaps `errors_unix.cpp` → `errors_windows.cpp` and adds `utf8.cpp`,
+  and drops `cmsg.cpp`; libcutils swaps the five unix socket TUs for the three
+  windows ones (`socket_local_*` has no Windows counterpart at all); liblog
+  drops `event_tag_map.cpp` (`sys/mman.h`).
+* Entry point is `sysdeps_win32.cpp`'s `wmain()`, which converts argv from
+  UTF-16 to UTF-8 before calling our `main()` — hence `-municode`.
+* `-DUNICODE=1 -D_UNICODE=1` (adb_defaults' windows cflags) are applied to adb's
+  own targets only, **not** globally: `libbase/file.cpp` passes a narrow `char*`
+  to `GetModuleFileName`, which `UNICODE` would map to the wide version. That is
+  also why `adb version` can print `Installed as <path>`.
+* `WIN32_LEAN_AND_MEAN` and `NOMINMAX` are scoped the same way — libusb's
+  `windows_usbdk.c` calls `min()` expecting the macro `NOMINMAX` removes.
+* mingw-w64 ships no libc++, so this build uses libstdc++. Checked rather than
+  assumed: both `is_standard_layout` asserts in `types.h` compile clean under
+  g++ and clang+libstdc++.
+
+Three upstream bugs only surface on Windows, so they are patched here
+(`patches/0004`, `patches/0005`) rather than worked around in the build:
+
+* `sysdeps/win32/stat.cpp` passes a `struct adb_stat*` to `wstat()`. That
+  compiles only when the toolchain aliases `struct stat` to the fixed-size
+  struct — Google's prebuilt mingw does, distro mingw-w64 does not, where
+  `wstat()` takes `struct _stat64*`. Now it stats into the fixed-size struct
+  and copies, with a `static_assert` on the layout equivalence.
+* `_FILE_OFFSET_BITS=64` must reach **every** translation unit. mingw picks
+  both `sizeof(struct stat)` (48 vs 56) and which `wstat` entry point is used
+  from it, so a writer compiled one way and a reader the other silently
+  disagree about where `st_size` is.
+* `is_root_dir()` only recognized `/`, but mingw's `dirname("/tmp")` returns
+  `\`, so the directory-creation walk in `copy_local_dir_remote()` never
+  terminated and every directory push died with `std::bad_alloc`. It now
+  accepts either separator, and the loop also stops on a `dirname()` fixed
+  point (`C:\`, `//x`) since that shape hangs on its own.
+* GCC cannot parse libbase's clang-only thread-safety annotations
+  (`static void f(int) EXCLUDES(m)` is a hard error) or `_Nonnull`, so
+  `shim/gnu_compat/` supplies neutral versions. The thread-annotation shim is
+  header-lookup only and is therefore global; `compat.h` is force-included
+  **per target** via `adb_apply_gnu_compat()`, because a global
+  `add_compile_options(-include ...)` would also reach the vendored protobuf
+  tree and break its configure.
+
+Smoke-test the .exe on Linux via wine (`bash scripts/test-adb-wine.sh`); CI runs
+it natively on a `windows-latest` runner.
 
 ## Run
 
@@ -201,12 +297,21 @@ remount, `install` (streamed/push/incremental), `logcat`, `emu`.
 
     bash scripts/test-adb.sh                                    # uses build-native/adb
     bash scripts/test-adb.sh build-native/adb ../adbd-standalone/build-native/adbd
+    bash scripts/test-adb-wine.sh                               # the same, against adb.exe
 
 It starts `adbd-standalone`'s daemon on a private port, then drives the client
 against it in an isolated `$HOME`: connect, `devices`, shell with exit-status
 propagation, byte-exact push/pull round trip (256 KiB of random data), recursive
 directory push, forward allocation, and `server-status` (which goes through
-protobuf TextFormat). 11 checks.
+protobuf TextFormat). 109 checks, plus 119 layout checks in
+`scripts/test-progress-layout.py` and 33 in `test_suggest`.
+
+`test-adb-wine.sh` replays the platform-independent half of that against
+`adb.exe` under wine and then goes one step further: it drives the Windows
+binary against the **native Linux adbd** over TCP, so a real sync push/pull
+round trip has to come back byte-identical through `ws2_32`, `sysdeps_win32`'s
+FD indirection and `adb_writev` over WSABUF. It also checks each compression
+algorithm (`-z lz4|zstd|brotli|none`) survives the cross-compiled codecs.
 
 ## License
 

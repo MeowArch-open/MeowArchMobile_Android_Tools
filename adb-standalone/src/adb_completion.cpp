@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -546,10 +547,24 @@ std::string SanitizeIdent(const std::string& s) {
     return out.empty() ? "adb" : out;
 }
 
-// The command name fish will see on the command line: argv[0]'s basename.
+// The command name fish will see on the command line.
+//
+// argv[0] is not a bare name: on Linux it can be a build-tree path
+// ("./build-native/adb"), and on Windows it is a full path with BACKSLASHES and
+// a ".exe" suffix ("Z:\...\build-win32\adb.exe"). Splitting on '/' alone left
+// the whole path in the generated script, so `complete -c` registered a command
+// no shell would ever type and fish completion silently did nothing — while the
+// bash and zsh emitters, which hardcode their two names, kept working. Both
+// separators are stripped here and a trailing ".exe" is dropped, so
+// `adb.exe --shell-completion=fish` on its own yields `complete -c adb`.
 std::string FishBaseName(const std::string& cmd) {
-    size_t slash = cmd.find_last_of('/');
+    size_t slash = cmd.find_last_of("/\\");
     std::string b = (slash == std::string::npos) ? cmd : cmd.substr(slash + 1);
+    if (b.size() > 4) {
+        std::string tail = b.substr(b.size() - 4);
+        for (char& c : tail) c = (char)tolower((unsigned char)c);
+        if (tail == ".exe") b.erase(b.size() - 4);
+    }
     return b.empty() ? "madb" : b;
 }
 

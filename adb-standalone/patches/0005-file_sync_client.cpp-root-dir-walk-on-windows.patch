@@ -1,0 +1,81 @@
+From: MeowArchMobile
+Subject: [PATCH] file_sync_client.cpp: terminate the root-dir walk on Windows
+
+copy_local_dir_remote() walks up from the destination to the filesystem root
+to collect the directories it has to create:
+
+    for (std::string path = rpath; !is_root_dir(path); path = Dirname(path))
+
+and upstream's is_root_dir() returns true only when the path is all forward
+slashes. On POSIX dirname() bottoms out at "/" so that is fine, but mingw's
+dirname() returns a single BACKSLASH for the root of a POSIX-style path —
+measured with the distro toolchain:
+
+    dirname("/tmp")       -> "\"
+    dirname("C:/x")       -> "C:\"
+    dirname("Z:/tmp/w")   -> "Z:/tmp"
+    dirname("\")          -> "\"        <- fixed point
+
+So is_root_dir("\\") is false, the loop never terminates, directory_list grows
+until the allocation fails, and every directory push on Windows dies with
+
+    terminate called after throwing an instance of 'std::bad_alloc'
+
+while single-file pushes work, because they never reach this loop.
+
+Two changes, deliberately independent:
+
+  * is_root_dir() treats either separator as root. Backslash is a separator on
+    Windows (adb_is_separator() already says so), so this is not a Windows
+    exception — it is the check matching the platform's path syntax.
+
+  * the loop also stops when dirname() returns its own input. mingw has two
+    such shapes ("C:\" and "//x", which it maps to "//x\"), and either one
+    would spin forever on its own. Without the first fix this alone would be
+    enough to stop the crash, but it would still push a bogus "\" entry into
+    directory_list and then try to mkdir it.
+
+POSIX behaviour is unchanged: "/" is all forward slashes, so it still exits on
+the first test, and dirname("/") returns "/" so the fixed-point check would
+stop the same loop one iteration earlier at worst — which it cannot reach,
+because is_root_dir("/") is already true.
+
+--- a/client/file_sync_client.cpp
++++ b/client/file_sync_client.cpp
+@@ -1566,9 +1566,18 @@
+ }
+ 
+ // dirname("//foo") returns "//", so we can't do the obvious `path == "/"`.
++//
++// A separator of EITHER kind counts as root. Upstream only looked at '/' and got
++// away with it on POSIX, where dirname() bottoms out at "/". mingw's dirname()
++// instead returns a single BACKSLASH for the root of a POSIX-style path
++// (measured: dirname("/tmp") -> "\", dirname("C:/x") -> "C:\", and
++// dirname("\") -> "\"), so this test never became true and the walk below
++// appended "\" to directory_list forever, ending in std::bad_alloc. That made
++// every directory push on Windows die, while single-file pushes worked because
++// they never reach this loop.
+ static bool is_root_dir(std::string_view path) {
+     for (char c : path) {
+-        if (c != '/') {
++        if (c != '/' && c != '\\') {
+             return false;
+         }
+     }
+@@ -1588,8 +1597,15 @@
+     std::vector<copyinfo> file_list;
+     std::vector<std::string> directory_list;
+ 
+-    for (std::string path = rpath; !is_root_dir(path); path = android::base::Dirname(path)) {
++    // The fixed-point check is belt-and-braces on top of is_root_dir(): a
++    // platform whose dirname() returns its own input for some path shape
++    // ("C:\", or "//x" which mingw maps to "//x\") would otherwise loop
++    // forever, and the failure mode is a bad_alloc rather than an error message.
++    for (std::string path = rpath; !is_root_dir(path);) {
+         directory_list.push_back(path);
++        std::string parent = android::base::Dirname(path);
++        if (parent == path) break;
++        path = std::move(parent);
+     }
+     std::reverse(directory_list.begin(), directory_list.end());
+ 

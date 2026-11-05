@@ -679,6 +679,22 @@ DRIVE
     # real bugs in the generated fish script (an out-of-range list index in
     # fish 4, and an empty transport token that made every device query run
     # `adb '' shell ...`) stayed invisible here.
+    # The NAME argument is optional: without it the generator derives the
+    # command from argv[0]. That path is what broke on Windows, where argv[0] is
+    # a full path with BACKSLASH separators and a ".exe" suffix, and splitting on
+    # '/' alone put the whole path into `complete -c` — a name no shell would
+    # ever type, so fish completion silently did nothing while the explicit-NAME
+    # case (what the checks below use) kept working. Assert the derived name is a
+    # bare word, with no separator and no .exe, so a regression in either
+    # FishBaseName half fails here on Linux too.
+    "$ADB" --shell-completion=fish > "$TMP/comp-fish-bare"
+    FISH_DERIVED="$(sed -n 's/^complete -c \([^ ]*\).*/\1/p' "$TMP/comp-fish-bare" | head -1)"
+    case "$FISH_DERIVED" in
+        */*|*'\\'*|*.exe|*.EXE|"")
+            bad "fish name derived from argv[0] is not a bare command: '$FISH_DERIVED'" ;;
+        *) ok "fish name derived from argv[0]: '$FISH_DERIVED'" ;;
+    esac
+
     FISH_CMD="adbm-test-$$"
     if command -v fish >/dev/null 2>&1; then
         mkdir -p "$TMP/fishbin"

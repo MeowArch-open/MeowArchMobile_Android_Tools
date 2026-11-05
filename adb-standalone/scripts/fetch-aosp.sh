@@ -15,10 +15,18 @@
 #                            are printed with TextFormat)
 #   external/fmtlib          built into libbase
 #   external/googletest      gtest_prod.h header only (libziparchive)
-#   external/libusb          headers only: the client includes
+#   external/libusb          Linux: headers only — the client includes
 #                            <libusb/libusb.h> by that path but links the
 #                            *system* libusb-1.0 (which has every symbol adb
-#                            uses; AOSP's fork only adds Android-only ones)
+#                            uses; AOSP's fork only adds Android-only ones).
+#                            Windows: the whole library IS compiled from here,
+#                            because Arch ships no mingw cross libusb.
+#   external/zlib, external/lz4, external/zstd, external/brotli
+#                            compression + zip, from AOSP's own copies. On
+#                            Linux the system libraries are used; on Windows
+#                            these are the only source (no mingw cross packages
+#                            exist), and matching AOSP keeps the wire format
+#                            identical to what the device expects.
 #   external/mdnsresponder   present in the tree but NOT built (its client stub
 #                            needs the mdnsd daemon over a Unix socket)
 #
@@ -59,3 +67,30 @@ fetch external/googletest https://android.googlesource.com/platform/external/goo
 fetch external/boringssl  https://android.googlesource.com/platform/external/boringssl  ff82e866658b678df9ae4aac825828ce45b50209
 fetch external/protobuf   https://android.googlesource.com/platform/external/protobuf   c8206780937dba60e53ce2fef7cc57c50439c30b
 fetch external/libusb     https://android.googlesource.com/platform/external/libusb     7b5267099855d320f6013d667d113e3619f18bf5
+
+# Compression / zip / deflate. Needed only for the Windows cross build (Linux
+# links the distro's libraries), but fetched unconditionally so one checkout
+# serves both and the two builds cannot drift.
+fetch external/zlib       https://android.googlesource.com/platform/external/zlib       f29fc757b1f27c182f36790eb0ccc6cf8ec27e8e
+fetch external/lz4        https://android.googlesource.com/platform/external/lz4        f2a717445d3a8a1aaa5aeef1cb2e9a4bc739e9b1
+fetch external/zstd       https://android.googlesource.com/platform/external/zstd       415469b3387190483d00ed838165d022d86cb899
+fetch external/brotli     https://android.googlesource.com/platform/external/brotli     e6b1ca20ff13da592055bbbc4f907c68ae8931d2
+
+# development repo — SPARSE: only host/windows/usb (adb_api.h for
+# usb_windows.cpp) and host/windows/prebuilt/usb (Google's prebuilt
+# AdbWinApi.dll/.a + AdbWinUsbApi.dll). The Windows build falls back to
+# win-prebuilt/usb/ when this is absent, so it is optional but preferred: it
+# is the same content soong links into the official adb.exe.
+DEVELOPMENT_SHA=88f7870b2c652922dc2afb01c076737e8bc50130
+if [ -d "$AOSP/development/.git" ]; then
+    echo "==> development: exists"
+else
+    echo "==> development (sparse: host/windows/usb + prebuilt) @ ${DEVELOPMENT_SHA:0:12}"
+    git init -q "$AOSP/development"
+    git -C "$AOSP/development" remote add origin \
+        https://android.googlesource.com/platform/development
+    git -C "$AOSP/development" sparse-checkout init --cone
+    git -C "$AOSP/development" sparse-checkout set host/windows/usb host/windows/prebuilt/usb
+    git -C "$AOSP/development" fetch -q --depth 1 origin "$DEVELOPMENT_SHA"
+    git -C "$AOSP/development" checkout -q FETCH_HEAD
+fi

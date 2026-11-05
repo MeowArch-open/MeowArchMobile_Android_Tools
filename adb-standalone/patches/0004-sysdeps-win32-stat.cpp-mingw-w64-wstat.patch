@@ -1,0 +1,88 @@
+From: MeowArchMobile
+Subject: [PATCH] sysdeps/win32/stat.cpp: stat through the fixed-size struct
+
+mingw-w64 14 (as distros package it) declares wstat() in <sys/stat.h> as an
+inline redirect to _wstat64(), whose second parameter is `struct _stat64*`.
+Upstream passes `&st`, a `struct adb_stat` deriving from `struct stat`, and
+that only compiles when the toolchain makes `stat` an alias for the
+fixed-size struct — Google's prebuilt mingw does, distro mingw-w64 does not:
+
+    error: cannot convert 'adb_stat*' to '_stat64*'
+       56 |     int result = wstat(path_wide.c_str(), &st);
+
+So stat into the fixed-size struct the function actually takes and copy the
+result into the caller's, with a static_assert pinning the layout
+equivalence that `struct adb_stat : public stat` already depends on. This
+compiles on both flavours.
+
+The other half of this bug was invisible until that one was fixed:
+_FILE_OFFSET_BITS=64 has to reach EVERY translation unit. mingw picks both
+the struct layout and the wstat entry point from it — sizeof(struct stat) is
+48 with st_size at offset 20 without it, 56 with st_size at 24 with it.
+sysdeps/win32/stat.cpp (compiled in adb_sysdeps) was getting 48 while
+client/file_sync_client.cpp (compiled in the adb target, which inherits the
+flag from ziparchive_static's PUBLIC definitions) was reading 56, so a
+directory push took st_size from the wrong offset, resized a Block to the
+resulting garbage and died:
+
+    terminate called after throwing an instance of 'std::bad_alloc'
+
+while single-file pushes worked, because nothing stats a local directory on
+that path. cmake/win32.cmake now sets the flag globally, as soong's
+windowsCflags does.
+
+diff --git a/sysdeps/win32/stat.cpp b/sysdeps/win32/stat.cpp
+index 844c1ce..af1cad5 100644
+--- a/sysdeps/win32/stat.cpp
++++ b/sysdeps/win32/stat.cpp
+@@ -31,11 +31,14 @@ int adb_stat(const char* path, struct adb_stat* s) {
+ #if defined(_FILE_OFFSET_BITS) && (_FILE_OFFSET_BITS == 64)
+ #ifdef _USE_32BIT_TIME_T
+ #define wstat _wstat32i64
++#define ADB_WSTAT_STRUCT struct _stat32i64
+ #else
+ #define wstat _wstat64
++#define ADB_WSTAT_STRUCT struct _stat64
+ #endif
+ #else
+ // <sys/stat.h> has a function prototype for wstat() that should be available.
++#define ADB_WSTAT_STRUCT struct adb_stat
+ #endif
+ 
+     std::wstring path_wide;
+@@ -52,8 +55,34 @@ int adb_stat(const char* path, struct adb_stat* s) {
+         expected_directory = true;
+     }
+ 
++    // Stat into the fixed-size struct wstat() actually takes, then copy into the
++    // caller's. Upstream passed `&st` (a `struct adb_stat`, which derives from
++    // `struct stat`) straight to wstat(), which only compiles when the
++    // toolchain makes `stat` an alias for that fixed-size struct: Google's
++    // prebuilt mingw does, but mingw-w64 as packaged by distros does not — there
++    // `struct stat` is its own struct and <sys/stat.h> declares wstat() as an
++    // inline redirect to _wstat64(), whose second parameter is `struct _stat64*`,
++    // so `adb_stat*` does not convert ("cannot convert 'adb_stat*' to
++    // '_stat64*'"). The copy is safe on either flavour: the assert below pins
++    // the layout equivalence that `struct adb_stat : public stat` in
++    // sysdeps/stat.h already depends on.
++    //
++    // Getting here at all requires _FILE_OFFSET_BITS=64 to be set for EVERY
++    // translation unit, not just some. mingw picks both the struct layout and
++    // the wstat entry point from it (48 bytes with st_size at 20 without, 56
++    // with st_size at 24 with), so a writer compiled one way and a reader the
++    // other silently disagree about where st_size is — which is how a win32
++    // directory push read a garbage size out of local_build_list()'s lstat and
++    // died in Block::resize() with std::bad_alloc, while single-file pushes
++    // (which never stat a local directory) worked.
+     struct adb_stat st;
+-    int result = wstat(path_wide.c_str(), &st);
++    ADB_WSTAT_STRUCT wst;
++    static_assert(sizeof(wst) == sizeof(st),
++                  "adb_stat and the fixed-size wstat struct must be layout-compatible");
++    int result = wstat(path_wide.c_str(), &wst);
++    if (result == 0) {
++        memcpy(&st, &wst, sizeof(st));
++    }
+     if (result == 0 && expected_directory) {
+         if (!S_ISDIR(st.st_mode)) {
+             errno = ENOTDIR;
