@@ -14,6 +14,9 @@ userland, no soong:
   compression. Runs on the host, talks to real phones. Plus UX additions:
   coloured `adb devices`, a push/pull progress bar with speed, categorised
   `adb help [section]`, and four languages (en/zh_CN/zh_TW/ja).
+  Also cross-built into a real **Windows** `adb.exe` with the same sources
+  (mingw-w64 i686, `usb_windows.cpp` + Google's `AdbWinApi.dll`, exactly the
+  combination soong builds) — see that README's Windows section.
 * [`better_fastboot/`](better_fastboot/) — AOSP's official host **fastboot**
   tool for **x86_64 Linux** (real `usb_linux` backend, Android-forked
   `mke2fs`/`make_f2fs` for `fastboot -w`) **and Windows** (`fastboot.exe`,
@@ -75,6 +78,17 @@ adb (x86_64 Linux):
     makepkg -f
     bash scripts/test-adb.sh        # end-to-end against adbd-standalone
 
+adb.exe (Windows, mingw-w64 cross — needs `mingw-w64-gcc`; build the native
+tree first, because protoc has to run on the build machine):
+
+    cd adb-standalone
+    cmake -B build-win32 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-i686.cmake \
+          -DHOST_PROTOC="$PWD/build-native/protobuf/protoc"
+    cmake --build build-win32
+    # build-win32/: adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll (ship together)
+    bash scripts/test-adb-wine.sh   # drives adb.exe against the native Linux adbd
+
 fastboot (x86_64 Linux):
 
     cd better_fastboot
@@ -94,7 +108,9 @@ bash/zsh/fish under both command names; regenerate manually with
 `mfastboot --shell-completion=bash|zsh|fish` (see better_fastboot/README.md).
 
 CI builds and smoke-tests all of it on every push (Linux native + aarch64
-cross + fastboot.exe on a real Windows runner).
+cross, and both .exe files: `adb.exe`/`fastboot.exe` run natively on a
+`windows-latest` runner, while `adb.exe` is additionally driven under wine in an
+Arch container against the native adbd so the real sync protocol is covered).
 
 ## License
 
