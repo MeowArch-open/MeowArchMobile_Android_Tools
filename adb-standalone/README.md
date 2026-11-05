@@ -347,7 +347,7 @@ they are what two CI runs looked like. The adbd gate names the usual cause in
 its own output (`libc++.so.1: cannot open shared object file` means the image
 needs the libc++/libc++abi packages, not a product fix).
 
-Two habits the suite had to adopt, both recorded at the call site so nobody
+Three habits the suite had to adopt, all recorded at the call site so nobody
 "tidies" them away:
 
 * a wine invocation is **never** piped into a filter. The call that spawns the
@@ -357,6 +357,11 @@ Two habits the suite had to adopt, both recorded at the call site so nobody
 * `wadb()` records the exit status in `$WINE_RC` rather than leaving it in `$?`,
   because the trailing `grep` would otherwise overwrite it and every
   `wadb ... && bad` or `RC=$?` check would pass vacuously.
+* a wine invocation whose environment must differ runs under `env -u VAR`, never
+  under `( unset VAR; ... ) &`. With the subshell, `$!` is the subshell's PID and
+  `kill "$FG_PID"` can leave the wine server holding the test port until its own
+  timeout expires — which is what the 0b section's foreground server did, so the
+  detached half of that section ran against a second live server.
 
 `-z` is a **sync** argument, not a global option: it has to follow `push`/`pull`,
 or adb's global parser reports "unknown command -z".
